@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nullcut"
+version = "0.0.1"
+description = "Local AI video editor. Phase 0 spine: footage in, OTIO timeline, rendered video out."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary" }
+dependencies = [
+    "numpy>=1.26",
+    "opentimelineio>=0.17",
+]
+
+[project.optional-dependencies]
+# ASR is optional at install time so the spine can be tested on a box with no
+# model weights. Pick one; auto-selection prefers WhisperX when both are present.
+asr = ["faster-whisper>=1.1"]
+whisperx = ["whisperx>=3.3"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+nullcut = "nullcut.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nullcut"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
