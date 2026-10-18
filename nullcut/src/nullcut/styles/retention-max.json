@@ -1,0 +1,21 @@
+{
+  "id": "retention-max",
+  "name": "Retention max",
+  "description": "Fast challenge-style cut: tight jump cuts, frequent zoom punches, word-by-word captions, SFX on cuts.",
+  "pacing": {"silence_ms": 150, "hook_silence_ms": 100, "max_static_s": 3.0, "cuts_per_min": 24},
+  "zoom": {"per_minute": 10, "scale_min": 1.10, "scale_max": 1.25, "ease_s": 0.12, "hold_s": 1.2, "drift": false},
+  "captions": {"mode": "word", "max_words": 3, "case": "upper", "highlight": "#FFC400", "emphasis": true},
+  "broll": {"density": 0.25, "min_s": 1.2, "max_s": 3.0},
+  "music": {"presence": true, "under_speech_db": -20, "gap_db": -10, "energy": "high", "beat_snap": false, "crossfade_s": 0.5},
+  "sfx": {"cut_share": 0.25, "zoom_share": 0.5},
+  "colour": {"saturation": 1.15, "contrast": 1.08, "warmth": 0.02, "lift": 0.0},
+  "transitions": {"allowed": ["cut"]},
+  "hook": {"max_s": 8, "required": true},
+  "beats": [
+    {"role": "hook", "share": 0.10},
+    {"role": "setup", "share": 0.10},
+    {"role": "body", "share": 0.60},
+    {"role": "payoff", "share": 0.15},
+    {"role": "cta", "share": 0.05}
+  ]
+}

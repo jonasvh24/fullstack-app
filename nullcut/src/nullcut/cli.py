@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
-from collections import Counter
 from pathlib import Path
 
 from . import __version__, analyse, asr, captions, config, models, project as proj, render, timeline
-from .compiler import CutOptions, compile_rough
+from .compiler import CutOptions, compile_rough, pick_fps
 from .project import read_json, stable_hash
 
-STANDARD_RATES = (23.976, 24.0, 25.0, 29.97, 30.0, 50.0, 59.94, 60.0)
 
 
 def parse_duration(text: str) -> float:
@@ -48,15 +47,6 @@ def mmss(seconds: float | None) -> str:
     seconds = abs(seconds)
     m, s = divmod(seconds, 60)
     return f"{sign}{int(m)}:{s:04.1f}"
-
-
-def pick_fps(index: dict) -> float:
-    rates = [c["fps"] for c in index["clips"] if c["words"] and c["fps"]]
-    if not rates:
-        return config.DEFAULT_FPS
-    common = Counter(round(r, 2) for r in rates).most_common(1)[0][0]
-    # Phone VFR averages land on 29.83 and similar; snap to the rate a viewer expects.
-    return min(STANDARD_RATES, key=lambda r: abs(r - common))
 
 
 def cmd_ingest(args: argparse.Namespace) -> int:
@@ -200,8 +190,10 @@ def cmd_info(args: argparse.Namespace) -> int:
 
 def cmd_models(args: argparse.Namespace) -> int:
     if args.action == "pull":
-        if not args.name:
-            raise SystemExit("which model? e.g. `nullcut models pull parakeet-tdt-0.6b-v3`")
+        if not args.name or args.name == "defaults":
+            for name in models.DEFAULT_PROFILE.values():
+                models.pull(name)
+            return 0
         if args.name not in models.REGISTRY:
             raise SystemExit(f"unknown model {args.name!r}; see `nullcut models`")
         models.pull(args.name)
@@ -214,6 +206,106 @@ def cmd_models(args: argparse.Namespace) -> int:
         flag = "default" if m.name in default else ""
         print(f"  {m.name:<22} {m.job:<4} {m.licence:<10} {state:<12} {flag}")
         print(f"  {'':<22} {m.notes}")
+    return 0
+
+
+def _progress(frac: float, msg: str) -> None:
+    sys.stderr.write(f"\r  {frac:4.0%}  {msg[:70]:<70}")
+    sys.stderr.flush()
+
+
+def cmd_brief(args: argparse.Namespace) -> int:
+    from . import plan
+
+    project = proj.resolve(config.nullcut_home(args.home), args.project)
+    updates: dict = {}
+    if args.text is not None:
+        updates["text"] = args.text
+    if args.target is not None:
+        updates["target_s"] = args.target
+    if args.style:
+        updates["style"] = args.style
+    if args.captions:
+        updates["captions"] = {"mode": args.captions}
+    if args.music:
+        updates["music"] = {"mode": "none" if args.music == "none" else "library",
+                            "mood": "" if args.music in ("none", "library") else args.music}
+    brief = plan.save_brief(project, updates) if updates else plan.load_brief(project)
+    print(json.dumps(brief, indent=2))
+    return 0
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    from . import pipeline
+
+    project = proj.resolve(config.nullcut_home(args.home), args.project)
+    answers = {}
+    if args.answer:
+        from . import plan
+        current = plan.latest_plan(project) or {}
+        for q, a in zip(current.get("questions", []), args.answer):
+            answers[q["text"]] = a
+    doc = pipeline.make_plan(project, answers, log=lambda m: print(f"  {m}"))
+    if doc["questions"]:
+        print("\nThe planner needs an answer before it can plan:")
+        for q in doc["questions"]:
+            print(f"  {q['text']}")
+        print("Re-run with --answer \"...\" (one per question, in order).")
+        return 0
+    s = doc["solver"]
+    print(f"plan v{doc['version']} by {doc['planner']}, style {doc['style']}: "
+          f"{mmss(s['kept_s'])} kept, {s['status']}")
+    for b in doc["beats"]:
+        lock = " [locked]" if b.get("locked") else ""
+        print(f"  {b['id']:<4} {b['role']:<7} {mmss(b['duration_s']):>7}  {b['title']}{lock}")
+    return 0
+
+
+def cmd_edit_render(args: argparse.Namespace) -> int:
+    from . import pipeline
+
+    project = proj.resolve(config.nullcut_home(args.home), args.project)
+    if args.command == "master":
+        out = pipeline.master(project, _progress)
+        rec, pkg = out["render"], out["package"]
+    else:
+        rec, pkg = pipeline.render_edit(project, "preview", _progress), None
+    sys.stderr.write("\n")
+    qc = rec["qc"]
+    print(f"  video     {project.path(rec['path'])}")
+    print(f"  length    {mmss(rec['duration_s'])}  ok: {qc['length_ok']}")
+    print(f"  loudness  {qc['loudness_lufs']} LUFS, {qc['true_peak_dbtp']} dBTP")
+    print(f"  cuts      clean: {qc['cuts_clean']} (worst {qc['worst_cut_db']} dB under speech)")
+    print("  style     " + ", ".join(f"{k} {v:.0%}" for k, v in qc["style_match"].items()))
+    if pkg:
+        print("  titles")
+        for t in pkg["titles"]:
+            print(f"    {t['text']}")
+        for t in pkg.get("rejected_titles", []):
+            print(f"    (dropped, not in the transcript) {t['text']}")
+        print(f"  package   {project.path('package')}")
+    return 0
+
+
+def cmd_music(args: argparse.Namespace) -> int:
+    from . import music
+
+    if args.action == "import":
+        if not args.folder:
+            raise SystemExit("which folder? `nullcut music import <folder>`")
+        music.import_folder(Path(args.folder).expanduser())
+        return 0
+    for t in music.load_library():
+        print(f"  {t['id']}  {t['name']:<32} {t['bpm']:>5.0f} bpm  energy {t['energy']:.2f}  "
+              f"{t['licence']}")
+    return 0
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    from . import server
+
+    print(f"nullcut on http://{args.host}:{args.port}")
+    server.serve(args.host, args.port, args.home)
     return 0
 
 
@@ -254,6 +346,37 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--size", type=parse_size)
     d.add_argument("--jobs", type=int)
     d.set_defaults(func=cmd_render)
+
+    b = sub.add_parser("brief", help="show or update the brief")
+    b.add_argument("project", nargs="?")
+    b.add_argument("--text")
+    b.add_argument("--target", type=parse_duration)
+    b.add_argument("--style", choices=sorted(__import__("nullcut.styles", fromlist=["x"])
+                                             .all_styles()))
+    b.add_argument("--captions", choices=("off", "clean", "word"))
+    b.add_argument("--music", help="none, library, or a mood such as 'calm piano'")
+    b.set_defaults(func=cmd_brief)
+
+    pl = sub.add_parser("plan", help="plan the edit against the brief and style")
+    pl.add_argument("project", nargs="?")
+    pl.add_argument("--answer", action="append", help="answer to the planner's question")
+    pl.set_defaults(func=cmd_plan)
+
+    for name, desc in (("preview", "720p preview of the planned edit"),
+                       ("master", "full-resolution master plus titles, chapters, exports")):
+        r_ = sub.add_parser(name, help=desc)
+        r_.add_argument("project", nargs="?")
+        r_.set_defaults(func=cmd_edit_render)
+
+    mu = sub.add_parser("music", help="the music library")
+    mu.add_argument("action", nargs="?", choices=("list", "import"), default="list")
+    mu.add_argument("folder", nargs="?")
+    mu.set_defaults(func=cmd_music)
+
+    sv = sub.add_parser("serve", help="the local web UI and API")
+    sv.add_argument("--host", default="127.0.0.1")
+    sv.add_argument("--port", type=int, default=8765)
+    sv.set_defaults(func=cmd_serve)
 
     m = sub.add_parser("models", help="list model weights, or pull one")
     m.add_argument("action", nargs="?", choices=("list", "pull"), default="list")

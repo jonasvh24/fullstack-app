@@ -1,85 +1,99 @@
 # nullcut
 
-Phase 0 of the Local AI Video Editor build plan: the spine. Footage in, OTIO timeline, rendered video out. No UI, no LLM, no styles. If this holds on real footage, everything after it is additive.
+Local AI video editor, Phase 1 (MVP) of the build plan. Three engines with a timeline file between them: **analyse** the footage once, **plan** the edit against a brief and a style, **compile and render** deterministically. The AI never touches pixels; it writes an Edit Plan, and plain code turns that into an OTIO timeline that FFmpeg executes.
 
 ```
-nullcut ingest ~/footage/lisbon
-nullcut rough --captions --target 8m
+nullcut models pull defaults            # Parakeet ASR + YuNet faces, commercial licences
+nullcut serve                           # UI and API on http://127.0.0.1:8765
 ```
 
-`rough` also takes a folder directly and ingests it on first sight, so Gate 0 is one command: `nullcut rough ~/footage/lisbon --captions --target 8m`.
+Or from the command line, the same seven steps (plan §2):
 
-## What it does
+```
+nullcut ingest ~/Footage/lisbon
+nullcut brief --text "fast travel vlog, open on the cliff jump" --target 4:00 --style cinematic-vlog --music energetic
+nullcut plan                            # may ask up to three questions; answer with --answer "..."
+nullcut preview                         # 720p from proxies, with Gate 1 QC and style match
+nullcut master                          # source resolution, titles, description, chapters, OTIO, FCPXML
+```
 
-| Stage | Module | Output |
+## Pipeline
+
+| Step | Module | Writes |
 |---|---|---|
-| Ingest | `analyse.py`, `media.py` | 720p proxies, 16 kHz ASR audio, 48 kHz mix PCM |
-| Analyse | `asr.py`, `analyse.py` | `index/clip_index.json`: words with voice-snapped edges, energy, sentence segments, highlight score |
-| Compile | `compiler.py` | ordered cut list on the output frame grid, each item tagged with the rules that made it |
-| Timeline | `timeline.py` | `timelines/timeline.v{n}.otio`, the only thing the renderer reads |
-| Render | `render.py`, `captions.py` | `renders/rough.v{n}.{master,preview}.mp4` plus SRT and VTT |
+| Ingest | `analyse.py`, `media.py` | proxies, ASR audio, mix PCM |
+| Analyse | `asr.py`, `vision.py` | `index/clip_index.json`: words, shots, keyframes, faces at 5 fps, motion, sharpness, exposure, scene captions (with a VLM), highlight scores |
+| Plan | `plan.py`, `solver.py` | `plans/edit_plan.v{n}.json`: beats, intent, sentences, emphasis words, music energy |
+| Compile | `composer.py`, `compiler.py` | `timelines/timeline.v{n}.otio`: V1 cuts, V2 B-roll, A2 music, beat markers, zooms, SFX |
+| Render | `render.py`, `music.py`, `fx.py`, `captions.py` | `renders/edit.v{n}.{preview,master}.mp4` + SRT/VTT |
+| Package | `package.py`, `qc.py` | `package/`: titles, description, chapters, OTIO, FCPXML |
 
-The compiler, in order: trim to word boundaries; remove hard fillers everywhere and soft fillers only when isolated; jump-cut pauses over the threshold. When a target is set and the cut runs long, the silence threshold tightens (350 → 300 → 250 → 200 → 150 ms) first, then CP-SAT drops whole sentences: maximise Σ highlight score subject to 0.95T ≤ length ≤ 1.05T, locked segments kept, story order untouched. If no selection fits the window, it lands as near T as possible. A cut that comes up short is reported in seconds, never padded.
+**Planner.** An LLM agent on any OpenAI-compatible endpoint (the Council seat by default) reads a contact sheet, never footage, and may call `search_clips`, `get_segment`, `get_transcript` and `ask_user` (three questions per project at most). Output is schema-constrained JSON, validated (unknown ids, reused sentences, broken locks) with one repair round. With no LLM, or one that fails, a deterministic planner produces the same shape. Locked beats survive every re-plan.
 
-ASR timestamps are only as fine as the encoder frame and drift at pauses, which is exactly where jump cuts land. Every word edge that borders a pause is snapped to the voice on a 10 ms energy envelope, inwards only. Sidecar transcripts are trusted as-is.
+**Solver.** CP-SAT over sentences: maximise highlight score inside the ±5 % window, each beat near its style share, hook under the style's cap, no beat emptied, locked beats kept. Story order is never the solver's to change.
 
-The renderer encodes each item to its own file with identical settings, keyed by a hash of everything that affects its pixels, then joins them by stream copy. Audio is cut once from PCM at sample-exact frame boundaries, so it cannot drift from the video however many cuts there are, then two-pass loudnorm to −14 LUFS / −1 dBTP. The delivered file is re-measured with `ebur128` and the result is printed: a measurement, not loudnorm's estimate.
+**Compiler rules, in order.** Trim to word boundaries and remove silences and fillers; snap cuts to music beats within ±120 ms (music-led styles); enforce max static seconds with a zoom on an emphasis word, else B-roll, else a zoom; eased zooms centred on the tracked face; word captions per profile with emphasis highlighted; B-roll over jump cuts first, dialogue continuing under it; music bed fitted to end on its final downbeat, ducked under speech, shaped by beat energy; SFX on the profile's share of cuts and punches. Every element records the rule that placed it.
+
+**Renderer.** Zooms are sub-pixel crop-and-scale through FFmpeg's `perspective` filter, not `zoompan`. Each item renders to its own cached file and joins by stream copy, so new music re-renders audio only. Audio is cut from PCM at sample-exact frame boundaries, so A/V drift is zero by construction, then two-pass loudnorm to −14 LUFS / −1 dBTP, re-measured on the delivered file.
+
+## Styles
+
+| | Explainer | Retention max | Cinematic vlog |
+|---|---|---|---|
+| Silence cut | 300 ms | 150 ms | 400 ms |
+| Max static | 7 s | 3 s | 9 s |
+| Zooms | 3/min, 1.06–1.12× | 10/min, 1.10–1.25× | slow push-ins |
+| Captions | clean, 6 words | word-by-word, upper | clean, 5 words |
+| B-roll density | 15 % | 25 % | 45 % |
+| Music | −22 dB under speech | −20 dB, SFX on cuts | music-led, beat-snapped cuts |
+| Grade | neutral | +15 % saturation | warm |
+
+Profiles are JSON in `src/nullcut/styles/`; the brief's zoom and B-roll sliders scale them.
 
 ## Install
 
 ```
-uv venv && . .venv/bin/activate
-uv pip install -e ".[dev]"
-nullcut models pull parakeet-tdt-0.6b-v3    # 487 MB, from the sherpa-onnx GitHub release
+uv venv && . .venv/bin/activate && uv pip install -e ".[dev]"
+nullcut models pull defaults
+nullcut music import ~/Music/licensed     # optional: tempo, beat grid, energy, licence per track
 ```
 
-Needs FFmpeg on `PATH`, built with libass. NVENC is used when a test encode succeeds, libx264 otherwise; force either with `NULLCUT_ENCODER`. Wheels exist for x86_64 and aarch64, so the same install runs on the Sparks.
+FFmpeg on `PATH` with libass. NVENC is used when a real test encode succeeds, libx264 otherwise. Wheels exist for x86_64 and aarch64.
 
-## ASR
-
-| Backend | Selected by `--asr auto` when | Licence | Notes |
-|---|---|---|---|
-| sidecar | `<clip>.words.json` exists | n/a | hand-corrected truth, never refined |
-| `whisperx` | `nullcut[whisperx]` installed | MIT / BSD | the plan's pick; forced alignment; weights from Hugging Face |
-| `parakeet` | model pulled | CC-BY-4.0 | default profile; 25 European languages incl. en, nl; ~14× real time on 4 CPU cores |
-| `faster-whisper` | `nullcut[whisper]` installed | MIT | weights from Hugging Face |
-
-`nullcut models` lists every registered weight with its licence. The default profile is tested to contain commercially licensed weights only (plan §14).
+**Docker:** `docker compose up -d` builds one image for API, UI and render workers, with GPU and NVENC passed through. The LLM and VLM stay outside: on the Sparks they are the Council's existing endpoints.
 
 ## Configuration
 
 | Variable | Default | Effect |
 |---|---|---|
-| `NULLCUT_HOME` | `~/nullcut` | projects live in `$NULLCUT_HOME/projects/<id>/` |
-| `NULLCUT_MODELS` | `$NULLCUT_HOME/models` | where pulled weights live |
-| `NULLCUT_ASR_MODEL` | `large-v3` | Whisper model name for either Whisper backend |
-| `NULLCUT_ASR_THREADS` | `min(8, cores)` | Parakeet CPU threads |
+| `NULLCUT_HOME` | `~/nullcut` | projects, models, music library, job database |
+| `NULLCUT_LLM_URL`, `_MODEL`, `_KEY` | `http://127.0.0.1:8000/v1`, `glm-4.5-air` | planner and titles; `NULLCUT_LLM=off` forces the deterministic planner |
+| `NULLCUT_CLOUD_PLANNER=1` + `NULLCUT_CLOUD_LLM_*` | off | route planning text, never footage, to a frontier model |
+| `NULLCUT_VLM_URL`, `_MODEL` | unset | scene captions per keyframe (Molmo2 or Qwen3-VL via vLLM) |
+| `NULLCUT_MODELS` | `$NULLCUT_HOME/models` | pulled weights |
 | `NULLCUT_ENCODER` | probed | `h264_nvenc` or `libx264` |
 | `NULLCUT_RENDER_JOBS` | `min(4, cores)` | parallel item encodes |
-| `NULLCUT_CAPTION_FONT` | `DejaVu Sans` | any font fontconfig can find |
 
-Thresholds, filler lists and highlight weights are constants in `config.py`. Phase 2 replaces them with a measured Style Profile without touching the compiler.
+## UI
 
-## Sidecar transcripts
-
-A `<clip stem>.words.json` next to a clip (or in `--transcripts DIR`) wins over ASR. It accepts nullcut's own shape (`{"language": "en", "words": [{"w", "s", "e", "p"}]}`) and WhisperX output as is. Hand-correct a bad transcript once and every later run uses it.
+React + TypeScript + Vite in `web/`, built into `src/nullcut/web_dist/` and served by the API. Steps: Clips (ingest progress), Brief, Storyboard (drag to reorder, lock, delete, remove sentences, answer questions), Preview (player, canvas timeline with beats, B-roll, zooms and music, hover for rules, QC), Deliver (master, titles, description, chapters, downloads). API contract: `docs/api.md`.
 
 ## Tests
 
-```
-python -m pytest -q
-```
+`python -m pytest -q`: 70 tests. The LLM planner protocol runs against a scripted OpenAI-compatible server: tool calls, schema request, repair, questions, fallback. The zoom renderer is checked against a reference crop. The HTTP API is driven end to end, from folder to package.
 
-44 tests; the real-model test skips when Parakeet has not been pulled. End-to-end tests run on generated footage whose audio "words" are tone bursts at known times. They check frame-grid edges, A/V drift under one frame, loudness within ±1 dB of −14 LUFS, cache reuse, and that a caption change re-encodes only what it touched. The real-model test synthesises speech and checks transcript and edge accuracy.
+## Verified
 
-Verified on synthesised speech (flite) with Parakeet, no sidecars: every word correct, pause-adjacent edges within ~20 ms of ground truth, every jump cut 55 dB or more below speech level, 0 ms A/V drift, −13.9 LUFS.
+On synthesised speech (flite) over a real face photo, Parakeet ASR, no sidecars: Gate 1 holds. Length is within ±5 %, every cut sits 54 dB or more under speech, and loudness lands at −14.0 LUFS. Zooms centre on the detected face, B-roll covers jump cuts, beat-snapped cuts land within 6 ms of the beat, and titles that the transcript does not support are dropped. The full flow was driven through the real UI in headless Chromium and inside the Docker image.
 
 ## Known gaps
 
-- **Not yet run on a human voice.** Flite is intelligible but robotic. One real talking-head clip is the test that matters. `[MED]`
-- **Filler capture.** Parakeet transcribed an isolated synthetic "Um" but turned one mid-sentence into "and". Whisper-family models do the same; the Whisper backends are primed with a disfluent prompt. Fillers the ASR drops still show up as pauses and fall to the jump-cut rule. Cheapest check: one real clip, count fillers heard versus removed. `[MED]`
-- **Whisper backends have not run here.** Hugging Face is blocked in this build environment; both are written against their documented APIs. Parakeet is the verified default. `[MED]`
-- **NVENC untested.** No GPU here; selection is by a real test encode, so a broken NVENC falls back to libx264 rather than failing. `[HIGH]`
-- **ASR spelling is American** ("Analyze") in captions. A British spelling pass belongs in Phase 1 with the caption styles.
-- **Soft fillers diverge from the plan.** "dus" goes only when isolated by pauses or opening a sentence before a pause; it is also a real word.
-- **Clips with no speech are skipped**, and reported. B-roll placement is a Phase 1 rule.
+- **No LLM has planned an edit yet.** No model endpoint is reachable from the build environment; the protocol is tested against a scripted server. The first real run against the Council is the test. `[MED]`
+- **No human voice or real footage yet.** Everything above ran on synthesised speech and test patterns. One real 10-minute talking head through `nullcut serve` settles most of what remains. `[MED]`
+- **No VLM or embeddings.** Scene captions need `NULLCUT_VLM_URL`; B-roll matching falls back to shot quality when there are none. SigLIP embeddings for `search_clips` are deferred; search is lexical over transcripts and captions.
+- **Expression intensity is not measured.** YuNet gives boxes, not blendshapes; zoom targets use the box. MediaPipe blendshapes are the Phase 2 upgrade with the thumbnail engine.
+- **Music analysis is librosa's.** It read a 120 bpm test track as 117.5 bpm; snapping absorbs that, but a real library needs checking. Vocal rejection (Demucs) is not built.
+- **Graphics are not built.** Rule 3's third fallback ("else a graphic") falls back to a zoom.
+- **Style match is computed from the timeline**, not measured from rendered pixels. Phase 2's style engine measures the output.
+- **SFX are synthesised** (whoosh, pop) until a curated pack is chosen.
+- **NVENC is untested.** There is no GPU in the build environment.

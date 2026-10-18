@@ -48,15 +48,58 @@ def build(items: list[Item], index: dict, meta: dict) -> otio.schema.Timeline:
         v.metadata["nullcut"] = {
             "clip_id": it.clip_id, "segment_id": it.segment_id,
             "src_in": it.src_in, "src_out": it.src_out, "frames": it.frames,
-            "rules": it.rules, "words": it.words,
+            "rules": it.rules, "words": it.words, "beat_id": it.beat_id,
         }
         a = otio.schema.Clip(name=name, media_reference=_ref(clip, fps), source_range=rng)
         a.metadata["nullcut"] = {"clip_id": it.clip_id, "segment_id": it.segment_id}
         v1.append(v)
         a1.append(a)
 
+    # Beats as markers: the storyboard's structure survives into Resolve and Premiere.
+    for b in meta.get("beats", []):
+        v1.markers.append(otio.schema.Marker(
+            name=f"{b['role']}: {b['title']}", color=otio.schema.MarkerColor.BLUE,
+            marked_range=otio.opentime.TimeRange(
+                otio.opentime.RationalTime(round(b["start_s"] * fps), fps),
+                otio.opentime.RationalTime(max(1, round((b["end_s"] - b["start_s"]) * fps)), fps))))
+
     tl.tracks.append(v1)
+    if meta.get("broll"):
+        v2 = otio.schema.Track(name="V2 B-roll", kind=otio.schema.TrackKind.Video)
+        cursor = 0
+        for b in meta["broll"]:
+            start, end = round(b["start_s"] * fps), round(b["end_s"] * fps)
+            if start > cursor:
+                v2.append(otio.schema.Gap(source_range=otio.opentime.TimeRange(
+                    duration=otio.opentime.RationalTime(start - cursor, fps))))
+            clip = clips[b["clip_id"]]
+            c = otio.schema.Clip(name=f"{clip['name']} B-roll", media_reference=_ref(clip, fps),
+                                 source_range=otio.opentime.TimeRange(
+                                     otio.opentime.RationalTime(round(b["src_in"] * fps), fps),
+                                     otio.opentime.RationalTime(end - start, fps)))
+            c.metadata["nullcut"] = {"rule": b["rule"], "shot_id": b["shot_id"]}
+            v2.append(c)
+            cursor = end
+        tl.tracks.append(v2)
     tl.tracks.append(a1)
+    if meta.get("music"):
+        m = meta["music"]
+        total = sum(it.frames for it in items)
+        a2 = otio.schema.Track(name="A2 music", kind=otio.schema.TrackKind.Audio)
+        # Conform tools (the FCPXML adapter among them) need every reference's extent.
+        ref = otio.schema.ExternalReference(
+            target_url=Path(m["path"]).as_uri(),
+            available_range=otio.opentime.TimeRange(
+                otio.opentime.RationalTime(0, fps),
+                otio.opentime.RationalTime(round(m.get("duration", total / fps) * fps), fps)))
+        mc = otio.schema.Clip(name=m["name"], media_reference=ref,
+                              source_range=otio.opentime.TimeRange(
+                                  otio.opentime.RationalTime(round(m["pieces"][0][0] * fps), fps),
+                                  otio.opentime.RationalTime(total, fps)))
+        mc.metadata["nullcut"] = {"pieces": m["pieces"], "licence": m["licence"],
+                                  "note": "looped on bar lines; pieces lists the exact ranges"}
+        a2.append(mc)
+        tl.tracks.append(a2)
     tl.metadata["nullcut"] = {
         "schema": SCHEMA,
         **meta,
@@ -97,10 +140,10 @@ def load(path: Path) -> tuple[dict, list[Item]]:
     meta = _plain(tl.metadata["nullcut"])
     if meta.get("schema") != SCHEMA:
         raise SystemExit(f"{path.name}: unsupported timeline schema {meta.get('schema')}")
-    video = next(t for t in tl.tracks if t.kind == otio.schema.TrackKind.Video)
+    video = next(t for t in tl.tracks if t.kind == otio.schema.TrackKind.Video and t.name == "V1")
     items = []
     for clip in video.find_clips():
         m = _plain(clip.metadata["nullcut"])
         items.append(Item(m["clip_id"], m["segment_id"], m["src_in"], m["src_out"],
-                          m["frames"], m["words"], m["rules"]))
+                          m["frames"], m["words"], m["rules"], m.get("beat_id", "")))
     return meta, items

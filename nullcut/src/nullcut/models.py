@@ -32,6 +32,7 @@ class Model:
     directory: str | None = None
     files: tuple[str, ...] = field(default_factory=tuple)
     size_mb: int = 0
+    archive: bool = True  # False: url is the single file itself
 
 
 REGISTRY = {m.name: m for m in (
@@ -42,12 +43,18 @@ REGISTRY = {m.name: m for m in (
           directory="sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
           files=("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"),
           size_mb=487),
+    Model("yunet-2023mar", "faces", "MIT", True,
+          "OpenCV Zoo YuNet face detector, 230 KB ONNX; runs through cv2.FaceDetectorYN",
+          url="https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/"
+              "face_detection_yunet/face_detection_yunet_2023mar.onnx",
+          directory="yunet-2023mar", files=("face_detection_yunet_2023mar.onnx",),
+          size_mb=1, archive=False),
     Model("whisper-large-v3", "asr", "MIT", True,
           "faster-whisper / WhisperX; downloaded from Hugging Face by the library"),
 )}
 
 # What runs when nothing else is configured. Commercial licences only.
-DEFAULT_PROFILE = {"asr": "parakeet-tdt-0.6b-v3"}
+DEFAULT_PROFILE = {"asr": "parakeet-tdt-0.6b-v3", "faces": "yunet-2023mar"}
 
 
 def models_dir() -> Path:
@@ -105,8 +112,8 @@ def pull(name: str, log=print) -> Path:
     dest_root.mkdir(parents=True, exist_ok=True)
     log(f"{name}: downloading {model.size_mb} MB ({model.licence})")
     with tempfile.TemporaryDirectory(dir=dest_root, prefix=".pull-") as tmp:
-        archive = Path(tmp) / "model.tar.bz2"
-        with urllib.request.urlopen(model.url) as resp, archive.open("wb") as out:
+        download = Path(tmp) / ("model.tar.bz2" if model.archive else model.files[0])
+        with urllib.request.urlopen(model.url) as resp, download.open("wb") as out:
             total = int(resp.headers.get("Content-Length") or 0)
             done = 0
             while chunk := resp.read(1 << 20):
@@ -114,13 +121,18 @@ def pull(name: str, log=print) -> Path:
                 done += len(chunk)
                 _progress(done, total)
         sys.stderr.write("\n")
-        log(f"{name}: unpacking")
-        unpack = Path(tmp) / "unpack"
-        _safe_extract(archive, unpack)
-        src = unpack / model.directory
+        if model.archive:
+            log(f"{name}: unpacking")
+            unpack = Path(tmp) / "unpack"
+            _safe_extract(download, unpack)
+            src = unpack / model.directory
+        else:
+            src = Path(tmp) / "single"
+            src.mkdir()
+            shutil.move(str(download), src / model.files[0])
         missing = [f for f in model.files if not (src / f).exists()]
         if missing:
-            raise SystemExit(f"{name}: archive is missing {', '.join(missing)}")
+            raise SystemExit(f"{name}: download is missing {', '.join(missing)}")
         final = path_of(name)
         if final.exists():
             shutil.rmtree(final)

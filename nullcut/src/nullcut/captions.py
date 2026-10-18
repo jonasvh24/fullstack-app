@@ -6,6 +6,7 @@ one beat re-renders that beat's captions and nothing else.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from . import config
@@ -21,8 +22,18 @@ class Event:
     text: str  # ASS-ready, may contain override tags
 
 
-def output_words(items: list[Item], fps: float) -> list[dict]:
-    """Map every kept word from source time to output time."""
+def norm(word: str) -> str:
+    return re.sub(r"[^\w']", "", word.lower())
+
+
+def output_words(items: list[Item], fps: float,
+                 emphasis: dict[str, list[str]] | None = None) -> list[dict]:
+    """Map every kept word from source time to output time.
+
+    `emphasis` maps beat id to the words that beat asked to punch; matching
+    words come back with emph=True.
+    """
+    punch = {b: {norm(w) for w in ws} for b, ws in (emphasis or {}).items()}
     out, cursor = [], 0
     for it in items:
         t0 = cursor / fps
@@ -32,14 +43,16 @@ def output_words(items: list[Item], fps: float) -> list[dict]:
             e = t0 + (w["e"] - it.src_in)
             s, e = max(s, t0), min(e, t1)
             if e > s:
-                out.append({"w": w["w"], "s": s, "e": e})
+                out.append({"w": w["w"], "s": s, "e": e,
+                            "emph": norm(w["w"]) in punch.get(it.beat_id, set())})
         cursor += it.frames
     return out
 
 
-def group(words: list[dict], style: str) -> list[list[dict]]:
-    max_words = config.CAPTION_MAX_WORDS[style]
-    max_chars = config.CAPTION_MAX_CHARS[style]
+def group(words: list[dict], style: str, max_words: int | None = None) -> list[list[dict]]:
+    max_words = max_words or config.CAPTION_MAX_WORDS[style]
+    # Characters scale with words so a profile asking for 6 words gets room for them.
+    max_chars = max(config.CAPTION_MAX_CHARS[style], max_words * 6)
     blocks: list[list[dict]] = []
     current: list[dict] = []
     for w in words:
@@ -64,28 +77,50 @@ def escape(text: str) -> str:
     return text.replace("\\", "/").replace("{", "(").replace("}", ")").replace("\n", " ")
 
 
-def build_events(words: list[dict], style: str) -> list[Event]:
-    blocks = group(words, style)
+def ass_colour(hex_rgb: str) -> str:
+    """#RRGGBB to ASS &H00BBGGRR&."""
+    h = hex_rgb.lstrip("#")
+    return f"&H00{h[4:6]}{h[2:4]}{h[0:2]}&".upper() if len(h) == 6 else config.CAPTION_HIGHLIGHT
+
+
+def build_events(words: list[dict], style: str, opts: dict | None = None) -> list[Event]:
+    """Caption events in output time.
+
+    clean: one event per block; emphasis words coloured.
+    word:  one event per word; the spoken word is highlighted, emphasis words
+           also scale up a touch while spoken.
+    """
+    opts = opts or {}
+    blocks = group(words, style, opts.get("max_words"))
+    hi = ass_colour(opts["highlight"]) if opts.get("highlight") else config.CAPTION_HIGHLIGHT
+    use_emph = opts.get("emphasis", True)
+    upper = opts.get("case", "upper" if style == "word" else "sentence") == "upper"
+    white = "&H00FFFFFF&"
     events: list[Event] = []
     for n, block in enumerate(blocks):
         start = block[0]["s"]
         nxt = blocks[n + 1][0]["s"] if n + 1 < len(blocks) else float("inf")
         # Hold short blocks long enough to read, never over the next block.
         end = min(max(block[-1]["e"], start + 0.6), nxt)
-        texts = [escape(w["w"]) for w in block]
+        texts = [escape(w["w"].upper() if upper else w["w"]) for w in block]
         if style == "clean":
-            events.append(Event(start, end, " ".join(texts)))
+            line = " ".join(f"{{\\c{hi}}}{t}{{\\c{white}}}" if use_emph and w.get("emph") else t
+                            for t, w in zip(texts, block))
+            events.append(Event(start, end, line))
             continue
-        upper = [t.upper() for t in texts]
         for i, w in enumerate(block):
             ws = start if i == 0 else w["s"]
             we = block[i + 1]["s"] if i + 1 < len(block) else end
             if we <= ws:
                 continue
-            line = " ".join(
-                f"{{\\c{config.CAPTION_HIGHLIGHT}}}{t}{{\\c&H00FFFFFF&}}" if j == i else t
-                for j, t in enumerate(upper))
-            events.append(Event(ws, we, line))
+            parts = []
+            for j, t in enumerate(texts):
+                if j == i:
+                    pop = "\\fscx112\\fscy112" if use_emph and w.get("emph") else ""
+                    parts.append(f"{{\\c{hi}{pop}}}{t}{{\\c{white}\\fscx100\\fscy100}}")
+                else:
+                    parts.append(t)
+            events.append(Event(ws, we, " ".join(parts)))
     return events
 
 

@@ -89,3 +89,151 @@ def footage(tmp_path: Path) -> Path:
     make_media(folder / "01_intro.mp4", CLIP_A, 8.0)
     make_media(folder / "02_outro.mp4", CLIP_B, 5.5)
     return folder
+
+
+# --- a scripted OpenAI-compatible server ----------------------------------------------
+
+class FakeLLM:
+    """Answers /v1/chat/completions from a script; records every request body.
+
+    Each script entry is a dict (the assistant message) or a callable taking the
+    request body and returning one, so a test can answer from what was sent.
+    """
+
+    def __init__(self, script: list):
+        import http.server
+        import threading
+
+        self.script = list(script)
+        self.requests: list[dict] = []
+        fake = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, code: int, body: dict) -> None:
+                data = json.dumps(body).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self):
+                self._send(200, {"data": [{"id": "fake"}]})
+
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                fake.requests.append(body)
+                if not fake.script:
+                    return self._send(500, {"error": "script exhausted"})
+                step = fake.script.pop(0)
+                msg = step(body) if callable(step) else step
+                self._send(200, {"choices": [{"message": {"role": "assistant", **msg}}]})
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}/v1"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self) -> None:
+        self.server.shutdown()
+
+
+@pytest.fixture
+def fake_llm(monkeypatch):
+    servers = []
+
+    def start(script: list) -> FakeLLM:
+        f = FakeLLM(script)
+        servers.append(f)
+        monkeypatch.setenv("NULLCUT_LLM_URL", f.url)
+        monkeypatch.setenv("NULLCUT_LLM_MODEL", "fake")
+        monkeypatch.delenv("NULLCUT_LLM", raising=False)
+        return f
+
+    yield start
+    for s in servers:
+        s.close()
+
+
+@pytest.fixture(autouse=True)
+def isolated_home(tmp_path, monkeypatch):
+    """No test reads or writes the real ~/nullcut, and no test reaches a real LLM."""
+    monkeypatch.setenv("NULLCUT_HOME", str(tmp_path / "nullcut-home"))
+    monkeypatch.setenv("NULLCUT_LLM", "off")
+    monkeypatch.delenv("NULLCUT_VLM_URL", raising=False)
+    monkeypatch.delenv("NULLCUT_CLOUD_PLANNER", raising=False)
+
+
+def make_broll(path: Path, size: str = "640x360", fps: int = 30) -> None:
+    """Three silent 3 s shots with hard cuts at 3 s and 6 s."""
+    subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", f"mandelbrot=s={size}:r={fps}",
+         "-f", "lavfi", "-i", f"testsrc2=s={size}:r={fps}",
+         "-f", "lavfi", "-i", f"smptehdbars=s={size}:r={fps}",
+         "-filter_complex", "[0]trim=0:3,setpts=PTS-STARTPTS[x];[1]trim=0:3,setpts=PTS-STARTPTS[y];"
+                            "[2]trim=0:3,setpts=PTS-STARTPTS[z];[x][y][z]concat=n=3:v=1[v]",
+         "-map", "[v]", "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+         str(path)], check=True)
+
+
+def make_music(path: Path, bpm: float = 120.0, seconds: float = 40.0) -> None:
+    """A kick on every beat, accented downbeats: a track with an unambiguous grid."""
+    sr = 48_000
+    t = np.arange(int(sr * seconds)) / sr
+    y = np.zeros_like(t)
+    beat = 60 / bpm
+    for k in range(int(seconds / beat)):
+        i = int(k * beat * sr)
+        tt = np.arange(int(0.25 * sr)) / sr
+        kick = (0.9 if k % 4 == 0 else 0.45) * np.sin(
+            2 * np.pi * (60 + 120 * np.exp(-tt * 30)) * tt) * np.exp(-tt * 12)
+        y[i:i + len(tt)] += kick[: len(y) - i]
+    y += 0.05 * np.sin(2 * np.pi * 220 * t)
+    y /= np.abs(y).max() * 1.1
+    pcm = (np.stack([y, y], 1) * 32767).astype("<i2")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(pcm.tobytes())
+
+
+@pytest.fixture
+def footage_broll(footage: Path) -> Path:
+    make_broll(footage / "03_broll.mp4")
+    return footage
+
+
+@pytest.fixture(scope="session")
+def _ingested_template(tmp_path_factory) -> Path:
+    """Footage with two speech clips (sidecar transcripts) and one B-roll clip, ingested once."""
+    if not HAS_FFMPEG:
+        pytest.skip("ffmpeg not installed")
+    from nullcut import analyse
+    from nullcut.project import open_or_create
+
+    base = tmp_path_factory.mktemp("ingested")
+    folder = base / "footage"
+    folder.mkdir()
+    make_media(folder / "01_intro.mp4", CLIP_A, 8.0)
+    make_media(folder / "02_outro.mp4", CLIP_B, 5.5)
+    make_broll(folder / "03_broll.mp4")
+    project = open_or_create(base / "home", folder, "template")
+    analyse.ingest(project, folder, backend="sidecar", log=lambda m: None)
+    return project.root
+
+
+@pytest.fixture
+def project(_ingested_template, tmp_path):
+    """A private copy of the ingested project, so tests can plan and render freely."""
+    import shutil
+
+    from nullcut.project import Project
+
+    root = tmp_path / "home" / "projects" / "template"
+    shutil.copytree(_ingested_template, root)
+    return Project(root)

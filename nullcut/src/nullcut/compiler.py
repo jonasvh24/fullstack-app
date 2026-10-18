@@ -26,6 +26,7 @@ class Item:
     frames: int = 0
     words: list[dict] = field(default_factory=list)
     rules: list[str] = field(default_factory=list)
+    beat_id: str = ""
 
     @property
     def duration(self) -> float:
@@ -334,3 +335,20 @@ def compile_rough(index: dict, opts: CutOptions) -> CutResult:
         report["shortfall_s"] = round(max(0.0, lo - kept), 2)
         report["overshoot_s"] = round(max(0.0, kept - hi), 2)
     return CutResult(items, report)
+
+
+STANDARD_RATES = (23.976, 24.0, 25.0, 29.97, 30.0, 50.0, 59.94, 60.0)
+
+
+def pick_fps(index: dict) -> float:
+    """Output rate: the most common source rate among speech clips, snapped to a standard one.
+
+    Phone VFR averages land on 29.83 and similar; a viewer expects 29.97 or 30.
+    """
+    from collections import Counter
+
+    rates = [c["fps"] for c in index["clips"] if c["words"] and c["fps"]]
+    if not rates:
+        return config.DEFAULT_FPS
+    common = Counter(round(r, 2) for r in rates).most_common(1)[0][0]
+    return min(STANDARD_RATES, key=lambda r: abs(r - common))

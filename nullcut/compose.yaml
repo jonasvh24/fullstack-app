@@ -1,0 +1,36 @@
+# nullcut on one box. The planner LLM and the optional VLM are not in here on
+# purpose: on the Sparks they are the Council's existing OpenAI-compatible
+# seats, so nullcut points at them instead of loading a second copy of a 30B model.
+#
+#   FOOTAGE=~/Footage MUSIC=~/Music/licensed docker compose up -d
+#   docker compose exec nullcut nullcut models pull defaults
+#
+# Then open http://127.0.0.1:8765 (over Tailscale from the MacBook).
+
+services:
+  nullcut:
+    build: .
+    image: nullcut:0.1.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"   # localhost only: there is no auth in v1
+    environment:
+      NULLCUT_LLM_URL: ${NULLCUT_LLM_URL:-http://host.docker.internal:8000/v1}
+      NULLCUT_LLM_MODEL: ${NULLCUT_LLM_MODEL:-glm-4.5-air}
+      NULLCUT_VLM_URL: ${NULLCUT_VLM_URL:-}
+      NULLCUT_VLM_MODEL: ${NULLCUT_VLM_MODEL:-molmo2-8b}
+      NULLCUT_CLOUD_PLANNER: ${NULLCUT_CLOUD_PLANNER:-0}
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility   # video = NVENC
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ${NULLCUT_DATA:-./data}:/data                     # projects, models, music library
+      - ${FOOTAGE:-./footage}:/footage:ro                 # originals stay read-only
+      - ${MUSIC:-./music}:/music:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, video]

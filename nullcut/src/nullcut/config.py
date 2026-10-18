@@ -53,7 +53,8 @@ SOFT_FILLERS = {
 SOFT_FILLER_PAUSE_S = 0.20
 
 # Phase 0 highlight score: hand-set weights, learned per user from Phase 3.
-HIGHLIGHT_WEIGHTS = {"speech_rate": 0.4, "confidence": 0.3, "energy": 0.3}
+HIGHLIGHT_WEIGHTS = {"speech_rate": 0.30, "confidence": 0.20, "energy": 0.25,
+                     "face": 0.10, "sharp": 0.10, "steady": 0.05}
 
 # Output
 DEFAULT_FPS = 30.0

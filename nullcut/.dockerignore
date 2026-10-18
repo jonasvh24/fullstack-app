@@ -1,0 +1,7 @@
+.venv
+web/node_modules
+data
+footage
+music
+**/__pycache__
+.pytest_cache

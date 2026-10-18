@@ -14,11 +14,11 @@ from typing import Callable
 
 import numpy as np
 
-from . import asr, config, media
+from . import asr, config, media, vision
 from .project import Project, file_fingerprint, find_clips, read_json, write_json
 
 # Bump when the per-clip record changes shape or meaning; stale caches re-run.
-ANALYSIS_VERSION = 5
+ANALYSIS_VERSION = 6
 ENERGY_HOP_S = 0.1
 SENTENCE_END = re.compile(r"[.?!…]['\"”’)]*$")
 
@@ -104,17 +104,29 @@ def build_segments(clip_id: str, words: list[dict]) -> list[dict]:
     return segments
 
 
-def segment_features(seg: dict, words: list[dict], energy: list[float]) -> dict:
+def segment_features(seg: dict, words: list[dict], energy: list[float],
+                     visual: dict | None = None) -> dict:
     chunk = words[seg["words"][0]: seg["words"][1]]
     dur = max(seg["end"] - seg["start"], 0.1)
     lo = int(seg["start"] / ENERGY_HOP_S)
     hi = max(lo + 1, int(np.ceil(seg["end"] / ENERGY_HOP_S)))
     window = energy[lo:hi]
-    return {
+    feats = {
         "speech_rate": len(chunk) / dur,
         "confidence": float(np.mean([w["p"] for w in chunk])),
         "energy": float(np.mean(window)) if window else -90.0,
+        "face": 0.0, "sharp": 0.0, "steady": 0.0,
     }
+    if visual:
+        q = visual["quality"]
+        a, b = int(seg["start"]), max(int(seg["start"]) + 1, int(np.ceil(seg["end"])))
+        faces = [f for f in visual["faces"] if seg["start"] <= f[0] < seg["end"]]
+        samples = max(1.0, (seg["end"] - seg["start"]) * vision.SAMPLE_FPS)
+        feats["face"] = min(1.0, len(faces) / samples)
+        feats["sharp"] = float(np.mean(q["sharp"][a:b] or [0.0]))
+        # Shaky spans read as amateur; steadiness is the negative of motion.
+        feats["steady"] = -float(np.mean(q["motion"][a:b] or [0.0]))
+    return feats
 
 
 def score_segments(clips: list[dict]) -> None:
@@ -123,6 +135,7 @@ def score_segments(clips: list[dict]) -> None:
     Ranks rather than raw values: one shouted sentence must not flatten every
     other segment's energy score towards zero.
     """
+    _score_broll(clips)
     segs = [s for c in clips for s in c["segments"]]
     if not segs:
         return
@@ -130,7 +143,7 @@ def score_segments(clips: list[dict]) -> None:
     total = sum(weights.values())
     blended = np.zeros(len(segs))
     for feature, weight in weights.items():
-        values = np.array([s["features"][feature] for s in segs])
+        values = np.array([s["features"].get(feature, 0.0) for s in segs])
         if len(segs) == 1:
             pct = np.array([0.5])
         else:
@@ -140,8 +153,28 @@ def score_segments(clips: list[dict]) -> None:
         s["score"] = round(float(v), 3)
 
 
+def _rank(values: list[float]) -> np.ndarray:
+    v = np.array(values, dtype=float)
+    if len(v) <= 1:
+        return np.full(len(v), 0.5)
+    return v.argsort().argsort() / (len(v) - 1)
+
+
+def _score_broll(clips: list[dict]) -> None:
+    """B-roll units are shots of clips without speech: sharp, steady and well exposed wins."""
+    shots = [s for c in clips if not c["words"] for s in c.get("shots", [])]
+    if not shots:
+        return
+    exposure = [-abs(s["luma"] - 0.45) for s in shots]
+    blended = (0.45 * _rank([s["sharp"] for s in shots]) +
+               0.35 * _rank([-s["motion"] for s in shots]) + 0.2 * _rank(exposure))
+    for s, v in zip(shots, blended):
+        s["score"] = round(float(v), 3)
+
+
 def analyse_clip(project: Project, src: Path, clip_id: str, probe: media.Probe,
-                 backend: str, language: str | None, transcripts_dir: Path | None) -> dict:
+                 backend: str, language: str | None, transcripts_dir: Path | None,
+                 log: Log = print) -> dict:
     cache = project.path("index", "clips", f"{clip_id}.json")
     if cache.exists():
         cached = read_json(cache)
@@ -159,9 +192,17 @@ def analyse_clip(project: Project, src: Path, clip_id: str, probe: media.Probe,
             words = refine_word_edges(words, wav)
         energy = rms_envelope(wav)
 
+    record = {
+        "id": clip_id, "name": src.name, "proxy": f"media/proxies/{clip_id}.mp4",
+        "duration": probe.duration, "width": probe.width, "height": probe.height,
+    }
+    visual = vision.analyse_visual(project, record, log)
+
     segments = build_segments(clip_id, words)
     for seg in segments:
-        seg["features"] = segment_features(seg, words, energy)
+        seg["features"] = segment_features(seg, words, energy, visual)
+        kf = vision.nearest_keyframe(visual["keyframes"], (seg["start"] + seg["end"]) / 2)
+        seg["keyframe"] = kf[1] if kf else None
 
     record = {
         "analysis_version": ANALYSIS_VERSION,
@@ -174,6 +215,8 @@ def analyse_clip(project: Project, src: Path, clip_id: str, probe: media.Probe,
         "words": words,
         "energy": {"hop": ENERGY_HOP_S, "rms_db": energy},
         "segments": segments,
+        "speech": bool(words),
+        **visual,
     }
     write_json(cache, record)
     return record
@@ -181,7 +224,8 @@ def analyse_clip(project: Project, src: Path, clip_id: str, probe: media.Probe,
 
 def ingest(project: Project, folder: Path, backend: str = "auto", language: str | None = None,
            transcripts_dir: Path | None = None, recursive: bool = False,
-           log: Log = print) -> dict:
+           log: Log = print, progress: Callable[[float, str], None] | None = None) -> dict:
+    progress = progress or (lambda frac, msg: None)
     media.require_ffmpeg()
     sources = find_clips(folder, recursive)
     if not sources:
@@ -196,6 +240,7 @@ def ingest(project: Project, folder: Path, backend: str = "auto", language: str 
             log(f"[{n}/{len(sources)}] {src.name}: same content as {seen[clip_id].name}, skipped")
             continue
         seen[clip_id] = src
+        progress(0.5 * (n - 1) / len(sources), f"{src.name}: proxy")
         probe = media.probe(src)
         if not probe.has_video:
             log(f"[{n}/{len(sources)}] {src.name}: no video stream, skipped")
@@ -211,12 +256,16 @@ def ingest(project: Project, folder: Path, backend: str = "auto", language: str 
     # Pass 2: analysis, cached by content so a clip is analysed once, ever.
     clips = []
     for n, (src, clip_id, probe) in enumerate(prepared, 1):
-        record = analyse_clip(project, src, clip_id, probe, backend, language, transcripts_dir)
+        progress(0.5 + 0.5 * (n - 1) / len(prepared), f"{src.name}: analysing")
+        record = analyse_clip(project, src, clip_id, probe, backend, language, transcripts_dir,
+                              log)
         log(f"[{n}/{len(prepared)}] {src.name}: {len(record['words'])} words, "
-            f"{len(record['segments'])} segments ({record['asr']})")
+            f"{len(record['segments'])} segments, {len(record['shots'])} shots "
+            f"({record['asr']}{', faces' if record['faces_available'] else ''})")
         clips.append(record)
 
     score_segments(clips)
     index = {"version": ANALYSIS_VERSION, "clips": clips}
     write_json(project.clip_index_path, index)
+    progress(1.0, f"{len(clips)} clips indexed")
     return index

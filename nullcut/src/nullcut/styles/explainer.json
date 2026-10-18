@@ -1,0 +1,21 @@
+{
+  "id": "explainer",
+  "name": "Explainer",
+  "description": "Talking head with B-roll and clean captions. Calm pace, zooms only to break long static stretches.",
+  "pacing": {"silence_ms": 300, "hook_silence_ms": 220, "max_static_s": 7.0, "cuts_per_min": 8},
+  "zoom": {"per_minute": 3, "scale_min": 1.06, "scale_max": 1.12, "ease_s": 0.30, "hold_s": 2.5, "drift": false},
+  "captions": {"mode": "clean", "max_words": 6, "case": "sentence", "highlight": "#FFC400", "emphasis": true},
+  "broll": {"density": 0.15, "min_s": 2.0, "max_s": 5.0},
+  "music": {"presence": true, "under_speech_db": -22, "gap_db": -12, "energy": "mid", "beat_snap": false, "crossfade_s": 1.0},
+  "sfx": {"cut_share": 0.0, "zoom_share": 0.2},
+  "colour": {"saturation": 1.05, "contrast": 1.03, "warmth": 0.0, "lift": 0.0},
+  "transitions": {"allowed": ["cut"]},
+  "hook": {"max_s": 15, "required": true},
+  "beats": [
+    {"role": "hook", "share": 0.08},
+    {"role": "setup", "share": 0.17},
+    {"role": "body", "share": 0.55},
+    {"role": "payoff", "share": 0.15},
+    {"role": "cta", "share": 0.05}
+  ]
+}

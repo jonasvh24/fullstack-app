@@ -1,0 +1,21 @@
+{
+  "id": "cinematic-vlog",
+  "name": "Cinematic vlog",
+  "description": "Music-led travel cut: cuts snap to the beat, heavy B-roll, slow push-ins, warm grade, sparse captions.",
+  "pacing": {"silence_ms": 400, "hook_silence_ms": 300, "max_static_s": 9.0, "cuts_per_min": 12},
+  "zoom": {"per_minute": 1, "scale_min": 1.03, "scale_max": 1.06, "ease_s": 2.0, "hold_s": 4.0, "drift": true},
+  "captions": {"mode": "clean", "max_words": 5, "case": "sentence", "highlight": "#FFFFFF", "emphasis": false},
+  "broll": {"density": 0.45, "min_s": 2.0, "max_s": 6.0},
+  "music": {"presence": true, "under_speech_db": -16, "gap_db": -4, "energy": "high", "beat_snap": true, "crossfade_s": 2.0},
+  "sfx": {"cut_share": 0.0, "zoom_share": 0.0},
+  "colour": {"saturation": 0.95, "contrast": 1.06, "warmth": 0.08, "lift": 0.02},
+  "transitions": {"allowed": ["cut"]},
+  "hook": {"max_s": 12, "required": true},
+  "beats": [
+    {"role": "hook", "share": 0.10},
+    {"role": "setup", "share": 0.20},
+    {"role": "body", "share": 0.50},
+    {"role": "payoff", "share": 0.15},
+    {"role": "cta", "share": 0.05}
+  ]
+}
