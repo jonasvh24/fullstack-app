@@ -35,7 +35,7 @@ def test_ingest_then_rough(footage: Path, tmp_path: Path, capsys):
     # 8 s of speech against a 6 s target: the fit has to drop sentences.
     assert run("--home", str(home), "rough", "--captions", "--target", "6s", "--preview") == 0
     out = capsys.readouterr().out
-    assert "±5%: met" in out and "lowest-scoring sentences" in out
+    assert "±5%: met" in out and "cp-sat fit" in out
 
     mp4 = root / "renders" / "rough.v1.preview.mp4"
     assert mp4.exists()

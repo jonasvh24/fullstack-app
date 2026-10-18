@@ -8,7 +8,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from . import __version__, analyse, asr, captions, config, project as proj, render, timeline
+from . import __version__, analyse, asr, captions, config, models, project as proj, render, timeline
 from .compiler import CutOptions, compile_rough
 from .project import read_json, stable_hash
 
@@ -86,7 +86,8 @@ def print_cut(report: dict) -> None:
     ]
     if report["dropped_segments"]:
         rows.append(("dropped", f"-{mmss(report['dropped_s'])} "
-                                f"({len(report['dropped_segments'])} lowest-scoring sentences)"))
+                                f"({len(report['dropped_segments'])} sentences, "
+                                f"{report.get('solver') or 'greedy'} fit on highlight score)"))
     if report.get("target_s"):
         state = "met" if report["target_met"] else "MISSED"
         rows.append(("target", f"{mmss(report['target_s'])} ±{report['tolerance']:.0%}: {state}"))
@@ -197,6 +198,25 @@ def cmd_info(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_models(args: argparse.Namespace) -> int:
+    if args.action == "pull":
+        if not args.name:
+            raise SystemExit("which model? e.g. `nullcut models pull parakeet-tdt-0.6b-v3`")
+        if args.name not in models.REGISTRY:
+            raise SystemExit(f"unknown model {args.name!r}; see `nullcut models`")
+        models.pull(args.name)
+        return 0
+    default = set(models.DEFAULT_PROFILE.values())
+    print(f"models dir  {models.models_dir()}")
+    for m in models.REGISTRY.values():
+        state = ("installed" if models.installed(m.name)
+                 else "on first use" if m.url is None else "not pulled")
+        flag = "default" if m.name in default else ""
+        print(f"  {m.name:<22} {m.job:<4} {m.licence:<10} {state:<12} {flag}")
+        print(f"  {'':<22} {m.notes}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="nullcut", description=__doc__)
     p.add_argument("--version", action="version", version=f"nullcut {__version__}")
@@ -234,6 +254,11 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument("--size", type=parse_size)
     d.add_argument("--jobs", type=int)
     d.set_defaults(func=cmd_render)
+
+    m = sub.add_parser("models", help="list model weights, or pull one")
+    m.add_argument("action", nargs="?", choices=("list", "pull"), default="list")
+    m.add_argument("name", nargs="?")
+    m.set_defaults(func=cmd_models)
 
     n = sub.add_parser("info", help="clips and timelines in a project")
     n.add_argument("project", nargs="?")

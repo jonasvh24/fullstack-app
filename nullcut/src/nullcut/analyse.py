@@ -18,7 +18,7 @@ from . import asr, config, media
 from .project import Project, file_fingerprint, find_clips, read_json, write_json
 
 # Bump when the per-clip record changes shape or meaning; stale caches re-run.
-ANALYSIS_VERSION = 1
+ANALYSIS_VERSION = 5
 ENERGY_HOP_S = 0.1
 SENTENCE_END = re.compile(r"[.?!…]['\"”’)]*$")
 
@@ -36,6 +36,52 @@ def rms_envelope(wav: Path, hop_s: float = ENERGY_HOP_S) -> list[float]:
     frames = samples[: n * hop].astype(np.float32).reshape(n, hop) / 32768.0
     rms = np.sqrt(np.mean(frames * frames, axis=1))
     return np.round(20 * np.log10(np.maximum(rms, 1e-4)), 1).tolist()
+
+
+def refine_word_edges(words: list[dict], wav: Path, pause_s: float = 0.15,
+                      hop_s: float = 0.01) -> list[dict]:
+    """Snap word edges that border a pause to where the voice actually starts and stops.
+
+    ASR timestamps are only as fine as the encoder frame (80 ms for Parakeet)
+    and drift further at pauses, where the last piece is emitted after the
+    sound has ended. The jump-cut rule cuts exactly at these edges, so they
+    are tightened against a 10 ms energy envelope. Edges only ever move
+    inwards, and only next to a pause, so a word is never extended or split.
+    """
+    if not words:
+        return words
+    with wave.open(str(wav), "rb") as w:
+        rate = w.getframerate()
+        samples = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+    hop = max(1, int(rate * hop_s))
+    n = len(samples) // hop
+    if n < 10:
+        return words
+    frames = samples[: n * hop].astype(np.float32).reshape(n, hop) / 32768.0
+    db = 20 * np.log10(np.maximum(np.sqrt(np.mean(frames * frames, axis=1)), 1e-5))
+    floor, peak = np.percentile(db, 10), np.percentile(db, 99)
+    if peak - floor < 15:
+        return words  # no clear speech/room-tone contrast: trust the ASR
+    # Generous threshold: soft consonants sit well below vowels but far above room tone.
+    voiced = db > max(floor + 12, peak - 55)
+
+    out = []
+    for i, w in enumerate(words):
+        s, e = w["s"], w["e"]
+        # Clip head and tail always count as pauses: a jump cut trims there too.
+        gap_before = s - words[i - 1]["e"] if i else np.inf
+        gap_after = words[i + 1]["s"] - e if i + 1 < len(words) else np.inf
+        lo, hi = int(s / hop_s), min(n, int(np.ceil(e / hop_s)))
+        idx = np.flatnonzero(voiced[lo:hi])
+        if len(idx):
+            if gap_before >= pause_s:
+                s = max(s, (lo + idx[0]) * hop_s - hop_s)
+            if gap_after >= pause_s:
+                e = min(e, (lo + idx[-1] + 1) * hop_s + hop_s)
+        if e - s < 0.05:  # never collapse a word to nothing
+            s, e = w["s"], w["e"]
+        out.append({**w, "s": round(s, 3), "e": round(e, 3)})
+    return out
 
 
 def build_segments(clip_id: str, words: list[dict]) -> list[dict]:
@@ -108,6 +154,9 @@ def analyse_clip(project: Project, src: Path, clip_id: str, probe: media.Probe,
     energy: list[float] = []
     if probe.has_audio:
         words, lang, used = asr.transcribe(src, wav, backend, language, transcripts_dir)
+        # A sidecar is a hand-checked transcript: its times are the truth.
+        if not used.startswith("sidecar"):
+            words = refine_word_edges(words, wav)
         energy = rms_envelope(wav)
 
     segments = build_segments(clip_id, words)

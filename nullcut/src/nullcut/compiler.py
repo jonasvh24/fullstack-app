@@ -39,6 +39,7 @@ class CutOptions:
     silence_s: float = config.SILENCE_THRESHOLD_S
     fps: float = config.DEFAULT_FPS
     remove_fillers: bool = True
+    locked: set[str] = field(default_factory=set)  # segment ids the fit may not drop
 
 
 @dataclass
@@ -161,18 +162,62 @@ def total(items: list[Item]) -> float:
     return sum(it.duration for it in items)
 
 
-def fit(items: list[Item], scores: dict[str, float], target: float,
-        tolerance: float) -> tuple[list[Item], list[dict]]:
-    """Drop whole sentences, lowest score first, until inside the window.
+def _solve_cpsat(seg_len: dict[str, float], scores: dict[str, float], target: float,
+                 tolerance: float, locked: set[str]) -> set[str] | None:
+    """Plan §6: max sum(s_i x_i) s.t. 0.95T <= sum(l_i x_i) <= 1.05T, locked kept.
 
-    Greedy is enough for a talking head; Phase 1 swaps in CP-SAT with story
-    and locked-beat constraints.
+    When no selection lands in the window, a second solve minimises the
+    distance to T instead, with score as the tie-break. Returns the dropped
+    segment ids, or None when OR-Tools is not installed.
     """
+    try:
+        from ortools.sat.python import cp_model
+    except ImportError:
+        return None
+
+    ids = list(seg_len)
+    ms = {s: max(1, round(seg_len[s] * 1000)) for s in ids}
+    pts = {s: round(scores.get(s, 0.5) * 1000) for s in ids}
+    lo, hi, t = (round(target * f * 1000) for f in (1 - tolerance, 1 + tolerance, 1))
+
+    def solve(in_window: bool) -> set[str] | None:
+        m = cp_model.CpModel()
+        x = {s: m.NewBoolVar(s) for s in ids}
+        for s in locked & set(ids):
+            m.Add(x[s] == 1)
+        kept = sum(ms[s] * x[s] for s in ids)
+        score = sum(pts[s] * x[s] for s in ids)
+        if in_window:
+            m.Add(kept >= lo)
+            m.Add(kept <= hi)
+            m.Maximize(score)
+        else:
+            dev = m.NewIntVar(0, sum(ms.values()) + t, "dev")
+            m.AddAbsEquality(dev, kept - t)
+            m.Minimize(dev * (sum(pts.values()) + 1) - score)
+        solver = cp_model.CpSolver()
+        # One worker keeps the choice between equal-score solutions stable:
+        # the same input must always give the same cut.
+        solver.parameters.num_workers = 1
+        solver.parameters.random_seed = 0
+        solver.parameters.max_time_in_seconds = 5.0
+        status = solver.Solve(m)
+        if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            return None
+        return {s for s in ids if not solver.Value(x[s])}
+
+    in_window = solve(True)
+    if in_window is not None:
+        return in_window
+    nearest = solve(False)
+    return nearest if nearest is not None else set()
+
+
+def _greedy(seg_len: dict[str, float], scores: dict[str, float], target: float,
+            tolerance: float, locked: set[str]) -> set[str]:
     lo, hi = target * (1 - tolerance), target * (1 + tolerance)
-    seg_len: dict[str, float] = {}
-    for it in items:
-        seg_len[it.segment_id] = seg_len.get(it.segment_id, 0.0) + it.duration
-    order = sorted(seg_len, key=lambda s: (scores.get(s, 0.5), -seg_len[s]))
+    order = [s for s in sorted(seg_len, key=lambda s: (scores.get(s, 0.5), -seg_len[s]))
+             if s not in locked]
     dropped: set[str] = set()
     current = sum(seg_len.values())
     for seg in order:
@@ -182,16 +227,33 @@ def fit(items: list[Item], scores: dict[str, float], target: float,
             dropped.add(seg)
             current -= seg_len[seg]
     if current > hi:
-        # Nothing fits the window exactly: take the single drop that lands
-        # nearest the target, accepting a small undershoot over an overshoot.
         remaining = [s for s in order if s not in dropped]
         if remaining:
             best = min(remaining, key=lambda s: abs(current - seg_len[s] - target))
             if abs(current - seg_len[best] - target) < abs(current - target):
                 dropped.add(best)
+    return dropped
+
+
+def fit(items: list[Item], scores: dict[str, float], target: float, tolerance: float,
+        locked: set[str] | None = None) -> tuple[list[Item], list[dict], str]:
+    """Drop whole sentences to land on target. Story order is never touched.
+
+    CP-SAT when OR-Tools is installed, a greedy lowest-score-first pass
+    otherwise. Returns (kept items, dropped log, solver used).
+    """
+    locked = locked or set()
+    seg_len: dict[str, float] = {}
+    for it in items:
+        seg_len[it.segment_id] = seg_len.get(it.segment_id, 0.0) + it.duration
+    dropped = _solve_cpsat(seg_len, scores, target, tolerance, locked)
+    solver = "cp-sat"
+    if dropped is None:
+        dropped, solver = _greedy(seg_len, scores, target, tolerance, locked), "greedy"
+    order = sorted(dropped, key=lambda s: (scores.get(s, 0.5), -seg_len[s]))
     log = [{"segment": s, "seconds": round(seg_len[s], 2), "score": scores.get(s)}
-           for s in order if s in dropped]
-    return [it for it in items if it.segment_id not in dropped], log
+           for s in order]
+    return [it for it in items if it.segment_id not in dropped], log, solver
 
 
 def contiguous(a: Item, b: Item, fps: float) -> bool:
@@ -237,8 +299,9 @@ def compile_rough(index: dict, opts: CutOptions) -> CutResult:
 
     untrimmed = total(items)
     dropped: list[dict] = []
+    solver = None
     if opts.target_s and untrimmed > opts.target_s * (1 + opts.tolerance):
-        items, dropped = fit(items, scores, opts.target_s, opts.tolerance)
+        items, dropped, solver = fit(items, scores, opts.target_s, opts.tolerance, opts.locked)
 
     items = quantise(items, opts.fps)
     kept = sum(it.frames for it in items) / opts.fps
@@ -259,6 +322,7 @@ def compile_rough(index: dict, opts: CutOptions) -> CutResult:
         "filler_s": round(stats["filler_s"], 2),
         "dropped_segments": dropped,
         "dropped_s": round(sum(d["seconds"] for d in dropped), 2),
+        "solver": solver,
         "speech_s": round(speech_s, 2),
         "target_s": opts.target_s,
         "tolerance": opts.tolerance,

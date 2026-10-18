@@ -1,6 +1,6 @@
 """Speech recognition with word timestamps.
 
-Three backends behind one function. A sidecar transcript wins when present,
+Four backends behind one function. A sidecar transcript wins when present,
 which keeps tests deterministic and lets a user correct a bad transcript by
 hand without re-running a model.
 """
@@ -10,7 +10,11 @@ from __future__ import annotations
 import functools
 import json
 import os
+import re
+import wave
 from pathlib import Path
+
+import numpy as np
 
 # Whisper is trained on cleaned transcripts and silently drops disfluencies.
 # Priming the decoder with a disfluent prompt is the known workaround; without
@@ -20,7 +24,16 @@ DISFLUENT_PROMPTS = {
     "nl": "Euh, even denken, ehm... Oké, dus, wat ik eigenlijk, euh, bedoel is.",
 }
 
-BACKENDS = ("auto", "sidecar", "whisperx", "faster-whisper")
+BACKENDS = ("auto", "sidecar", "parakeet", "whisperx", "faster-whisper")
+
+# Parakeet does not report language; the filler rule needs it, and stopword
+# counts settle English versus Dutch reliably on any real sentence.
+STOPWORDS = {
+    "en": {"the", "and", "of", "to", "a", "in", "that", "it", "you", "this", "with", "for"},
+    "nl": {"de", "het", "een", "en", "van", "dat", "ik", "je", "niet", "met", "op", "voor"},
+}
+CHUNK_S = 45.0
+CHUNK_SEARCH_S = 8.0
 
 
 def sidecar_for(clip: Path, transcripts_dir: Path | None) -> Path | None:
@@ -84,6 +97,106 @@ def load_sidecar(path: Path) -> tuple[list[dict], str | None]:
     return normalise_words(raw), data.get("language")
 
 
+def detect_language(words: list[dict]) -> str:
+    tokens = [re.sub(r"[^\w]", "", w["w"].lower()) for w in words]
+    counts = {lang: sum(t in sw for t in tokens) for lang, sw in STOPWORDS.items()}
+    return max(counts, key=counts.get) if any(counts.values()) else "en"
+
+
+def chunk_bounds(samples: np.ndarray, rate: int, target_s: float = CHUNK_S,
+                 search_s: float = CHUNK_SEARCH_S) -> list[tuple[int, int]]:
+    """Split long audio at the quietest 100 ms before each target boundary.
+
+    The encoder's memory grows with input length, and a boundary through a
+    word would split it in two; the quietest point near the boundary is
+    almost always a pause between words.
+    """
+    n = len(samples)
+    target, search, hop = int(target_s * rate), int(search_s * rate), rate // 10
+    bounds, start = [], 0
+    while n - start > target + search:
+        lo, hi = start + target - search, start + target
+        window = samples[lo:hi].astype(np.float32)
+        frames = window[: (len(window) // hop) * hop].reshape(-1, hop)
+        quietest = int(np.argmin((frames * frames).mean(axis=1)))
+        cut = lo + quietest * hop + hop // 2
+        bounds.append((start, cut))
+        start = cut
+    bounds.append((start, n))
+    return bounds
+
+
+@functools.lru_cache(maxsize=1)
+def _parakeet_recognizer(model_dir: str):
+    import sherpa_onnx
+
+    d = Path(model_dir)
+    return sherpa_onnx.OfflineRecognizer.from_transducer(
+        encoder=str(d / "encoder.int8.onnx"), decoder=str(d / "decoder.int8.onnx"),
+        joiner=str(d / "joiner.int8.onnx"), tokens=str(d / "tokens.txt"),
+        num_threads=int(os.environ.get("NULLCUT_ASR_THREADS", min(8, os.cpu_count() or 1))),
+        provider=os.environ.get("NULLCUT_ASR_PROVIDER", "cpu"),
+        model_type="nemo_transducer", decoding_method="greedy_search",
+    )
+
+
+def tokens_to_words(tokens: list[str], starts: list[float], durations: list[float],
+                    log_probs: list[float], offset: float) -> list[dict]:
+    """Merge BPE pieces into words. A leading space or SentencePiece mark opens a word;
+    punctuation joins the word it follows without stretching its end time."""
+    words: list[dict] = []
+    lps: list[list[float]] = []
+    for i, tok in enumerate(tokens):
+        piece = tok.replace("\u2581", " ")
+        text = piece.strip()
+        if not text:
+            continue
+        dur = durations[i] if i < len(durations) else 0.08
+        lp = log_probs[i] if i < len(log_probs) else 0.0
+        is_punct = not any(ch.isalnum() for ch in text)
+        if words and (is_punct or not piece.startswith(" ")):
+            words[-1]["w"] += text
+            if not is_punct:
+                words[-1]["e"] = offset + starts[i] + dur
+                lps[-1].append(lp)
+            continue
+        words.append({"w": text, "s": offset + starts[i], "e": offset + starts[i] + dur})
+        lps.append([lp])
+    for w, lp in zip(words, lps):
+        w["p"] = float(np.exp(np.mean(lp))) if lp else 1.0
+    return words
+
+
+def _transcribe_parakeet(wav: Path, language: str | None) -> tuple[list[dict], str]:
+    from . import models
+
+    name = models.DEFAULT_PROFILE["asr"]
+    if not models.installed(name):
+        raise SystemExit(f"Parakeet model not installed: run `nullcut models pull {name}`")
+    rec = _parakeet_recognizer(str(models.path_of(name)))
+    with wave.open(str(wav), "rb") as w:
+        rate = w.getframerate()
+        samples = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+    audio = samples.astype(np.float32) / 32768.0
+
+    bounds = chunk_bounds(samples, rate)
+    streams = []
+    for a, b in bounds:
+        st = rec.create_stream()
+        st.accept_waveform(rate, audio[a:b])
+        streams.append(st)
+    rec.decode_streams(streams)
+
+    raw: list[dict] = []
+    for (a, _), st in zip(bounds, streams):
+        r = st.result
+        raw.extend(tokens_to_words(list(r.tokens), list(r.timestamps),
+                                   list(getattr(r, "durations", []) or []),
+                                   list(getattr(r, "ys_log_probs", []) or []), a / rate))
+    words = normalise_words(raw)
+    return words, language or detect_language(words)
+
+
 @functools.lru_cache(maxsize=2)
 def _faster_whisper_model(name: str):
     from faster_whisper import WhisperModel
@@ -140,12 +253,24 @@ def transcribe(clip: Path, wav: Path, backend: str = "auto", language: str | Non
     if backend == "sidecar":
         raise SystemExit(f"{clip.name}: no sidecar transcript ({clip.stem}.words.json)")
 
+    if backend == "parakeet":
+        words, lang = _transcribe_parakeet(wav, language)
+        return words, lang, "parakeet"
     if backend == "whisperx" or (backend == "auto" and _importable("whisperx")):
         words, lang = _transcribe_whisperx(wav, language)
         return words, lang, "whisperx"
+    if backend == "auto" and _parakeet_ready():
+        words, lang = _transcribe_parakeet(wav, language)
+        return words, lang, "parakeet"
     if backend == "faster-whisper" or (backend == "auto" and _importable("faster_whisper")):
         words, lang = _transcribe_faster_whisper(wav, language)
         return words, lang, "faster-whisper"
     raise SystemExit(
-        "no ASR backend: `pip install 'nullcut[asr]'` (faster-whisper) or "
-        "'nullcut[whisperx]', or put <clip>.words.json next to each clip")
+        "no ASR backend: run `nullcut models pull parakeet-tdt-0.6b-v3`, install "
+        "'nullcut[whisper]' or 'nullcut[whisperx]', or put <clip>.words.json next to each clip")
+
+
+def _parakeet_ready() -> bool:
+    from . import models
+
+    return _importable("sherpa_onnx") and models.installed(models.DEFAULT_PROFILE["asr"])

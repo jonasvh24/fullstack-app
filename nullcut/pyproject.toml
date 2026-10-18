@@ -12,12 +12,14 @@ license = { text = "Proprietary" }
 dependencies = [
     "numpy>=1.26",
     "opentimelineio>=0.17",
+    "ortools>=9.10",       # CP-SAT duration solver
+    "sherpa-onnx>=1.12",   # Parakeet ASR runtime; weights via `nullcut models pull`
 ]
 
 [project.optional-dependencies]
-# ASR is optional at install time so the spine can be tested on a box with no
-# model weights. Pick one; auto-selection prefers WhisperX when both are present.
-asr = ["faster-whisper>=1.1"]
+# Whisper backends are optional. Auto-selection order: sidecar, WhisperX,
+# Parakeet (when pulled), faster-whisper.
+whisper = ["faster-whisper>=1.1"]
 whisperx = ["whisperx>=3.3"]
 dev = ["pytest>=8"]
 
