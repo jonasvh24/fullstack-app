@@ -28,8 +28,8 @@ die()  { printf '\n\033[1;31mxx\033[0m  %s\n' "$*" >&2; exit 1; }
 json_eval() {
   osascript -l JavaScript -e '
     function run(argv) {
-      var d = JSON.parse(argv[0]);
-      var r = (function (d) { return eval(argv[1]); })(d);
+      // Function constructor, not eval: JXA does not expose local scope to eval.
+      var r = new Function("d", "return (" + argv[1] + ");")(JSON.parse(argv[0]));
       return r === undefined || r === null ? "" : String(r);
     }' "$(cat)" "$1"
 }
@@ -41,12 +41,23 @@ json_eval() {
 # still needed to run the Fabric installer, and by third-party launchers (Prism,
 # MultiMC) and dedicated servers. Temurin 25 is the current LTS.
 say "Checking Java $JAVA_MAJOR"
+# Major version of a java binary: "1.8.0_503" -> 8, "25.0.1" -> 25. Empty if it won't run.
+java_major() {
+  "$1" -version 2>&1 | sed -n 's/.*version "\([0-9][0-9.]*\).*/\1/p' | head -n1 \
+    | awk -F. '{ print ($1 == "1") ? $2 : $1 }'
+}
+# java_home can hand back the legacy Java 8 browser plugin even when asked for -v 25,
+# so every candidate is checked by actually running it.
 JAVA_HOME_DIR=""
-if [ -x "$JVM_DIR/temurin-$JAVA_MAJOR.jdk/Contents/Home/bin/java" ]; then
-  JAVA_HOME_DIR="$JVM_DIR/temurin-$JAVA_MAJOR.jdk/Contents/Home"
-elif JH="$(/usr/libexec/java_home -v "$JAVA_MAJOR" 2>/dev/null)"; then
-  JAVA_HOME_DIR="$JH"
-fi
+for CAND in "$JVM_DIR/temurin-$JAVA_MAJOR.jdk/Contents/Home" \
+            "$(/usr/libexec/java_home -v "$JAVA_MAJOR" 2>/dev/null || true)"; do
+  [ -n "$CAND" ] && [ -x "$CAND/bin/java" ] || continue
+  MAJOR="$(java_major "$CAND/bin/java")"
+  if [ -n "$MAJOR" ] && [ "$MAJOR" -ge "$JAVA_MAJOR" ]; then
+    JAVA_HOME_DIR="$CAND"
+    break
+  fi
+done
 
 if [ -z "$JAVA_HOME_DIR" ]; then
   case "$(uname -m)" in
@@ -67,7 +78,8 @@ if [ -z "$JAVA_HOME_DIR" ]; then
   JAVA_HOME_DIR="$JVM_DIR/temurin-$JAVA_MAJOR.jdk/Contents/Home"
 fi
 JAVA="$JAVA_HOME_DIR/bin/java"
-"$JAVA" -version >/dev/null 2>&1 || die "Java at $JAVA does not run."
+MAJOR="$(java_major "$JAVA")"
+[ -n "$MAJOR" ] && [ "$MAJOR" -ge "$JAVA_MAJOR" ] || die "Java at $JAVA is not version $JAVA_MAJOR+."
 ok "$("$JAVA" -version 2>&1 | head -n1)"
 ok "JAVA_HOME=$JAVA_HOME_DIR"
 
