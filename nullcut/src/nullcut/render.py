@@ -25,7 +25,7 @@ from .project import Project, read_json, stable_hash, write_json
 
 # Bump when render output changes for identical inputs; old cache entries
 # simply stop matching.
-RENDER_VERSION = 3
+RENDER_VERSION = 4
 
 Log = Callable[[str], None]
 
@@ -286,6 +286,14 @@ def _loudnorm_json(stderr: str) -> dict:
     return json.loads(blocks[-1]) if blocks else {}
 
 
+def encode_audio(wav: Path, out: Path) -> None:
+    """The already-levelled mix to AAC, one pass."""
+    tmp = out.with_name(f".{out.name}")
+    media.ffmpeg("-i", str(wav), "-c:a", "aac", "-b:a", config.AUDIO_BITRATE,
+                 "-ar", str(config.MIX_SAMPLE_RATE), "-f", "mp4", str(tmp))
+    os.replace(tmp, out)
+
+
 def normalise_audio(wav: Path, out: Path) -> None:
     """Two-pass EBU R128 to the delivery target: −14 LUFS, −1 dBTP."""
     target = (f"I={config.LOUDNESS_TARGET_LUFS}:TP={config.TRUE_PEAK_DBTP}"
@@ -439,10 +447,14 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
         starts = np.cumsum([0] + [it.frames for it in items])[:-1] / fps
         cuts = [float(starts[k + 1]) for k in range(len(items) - 1)
                 if not contiguous(items[k], items[k + 1], fps)]
-        write_json(qc_path, cut_report(dialogue, cuts))
-        write_wav(mix_audio(dialogue, meta, words), mix_wav)
-        normalise_audio(mix_wav, mix_m4a)
+        from . import loudness
+        report = cut_report(dialogue, cuts)
+        level, stats = loudness.normalise(mix_audio(dialogue, meta, words),
+                                          config.LOUDNESS_TARGET_LUFS, config.TRUE_PEAK_DBTP)
+        write_wav(level, mix_wav)
+        encode_audio(mix_wav, mix_m4a)
         mix_wav.unlink(missing_ok=True)
+        write_json(qc_path, {**report, "mix_loudness": stats})
 
     final = renders / f"{stem}.mp4"
     tmp = final.with_name(f".{final.name}")
@@ -456,7 +468,14 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
     srt_path.write_text(captions.srt(words))
     vtt_path.write_text(captions.vtt(words))
 
-    loud = measure_loudness(final)
+    cut_qc = read_json(qc_path)
+    mix_loud = cut_qc.pop("mix_loudness", None)
+    if quality == "master" or not mix_loud:
+        # The delivered master is measured independently, by FFmpeg, from the file itself.
+        loud = {**measure_loudness(final), "loudness_measured_on": "file"}
+    else:
+        loud = {"integrated_lufs": mix_loud["integrated_lufs"],
+                "true_peak_dbtp": mix_loud["true_peak_dbtp"], "loudness_measured_on": "mix"}
     return {
         "output": str(final), "srt": str(srt_path), "vtt": str(vtt_path),
         "encoded": len(jobs_todo), "cached": len(items) - len(jobs_todo),
@@ -465,5 +484,5 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
         "video_s": round(media.stream_duration(final, "v"), 3),
         "audio_s": round(media.stream_duration(final, "a"), 3),
         **loud,
-        **read_json(qc_path),
+        **cut_qc,
     }
