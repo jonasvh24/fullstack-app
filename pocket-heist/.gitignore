@@ -1,0 +1,7 @@
+# Build outputs and generated files; the source of truth is src/.
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+sourcemap.json
+roblox.yml
