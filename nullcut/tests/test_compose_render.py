@@ -99,7 +99,7 @@ def test_sfx_and_captions_follow_the_profile(project):
     c = compose(project, "retention-max")
     assert {s["kind"] for s in c.sfx} <= {"whoosh", "pop"} and c.sfx
     assert c.captions == {"enabled": True, "style": "word", "max_words": 3, "case": "upper",
-                          "highlight": "#FFC400", "emphasis": True}
+                          "highlight": "#FFC400", "emphasis": True, "scale": 1.0}
     quiet = compose(project, "explainer", captions="off")
     assert quiet.captions["enabled"] is False and not quiet.sfx or \
         all(s["kind"] == "pop" for s in quiet.sfx)

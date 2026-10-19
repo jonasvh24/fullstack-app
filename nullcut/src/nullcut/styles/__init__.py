@@ -82,3 +82,30 @@ def apply_extras(style: dict, extras: dict | None) -> dict:
     if "hook_required" in extras:
         s["hook"]["required"] = bool(extras["hook_required"])
     return s
+
+
+TWEAKABLE = ("pacing", "zoom", "captions", "broll", "music", "sfx", "colour", "hook")
+
+
+def apply_overrides(style: dict, overrides: dict | None) -> dict:
+    """Refinement tweaks, deep-merged onto the profile. Values are absolute: a tweak
+    resolves "less zoom" to a number when it is made, so replaying it is idempotent."""
+    s = deepcopy(style)
+
+    def merge(dst: dict, src: dict) -> None:
+        for k, v in src.items():
+            if isinstance(v, dict) and isinstance(dst.get(k), dict):
+                merge(dst[k], v)
+            else:
+                dst[k] = deepcopy(v)
+
+    for section, values in (overrides or {}).items():
+        if section in TWEAKABLE and isinstance(values, dict) and isinstance(s.get(section), dict):
+            merge(s[section], values)
+    return s
+
+
+def for_brief(style_id: str, brief: dict) -> dict:
+    """The profile as this brief runs it: sliders first, then refinement overrides."""
+    return apply_overrides(apply_extras(get(style_id), brief.get("extras")),
+                           brief.get("overrides"))

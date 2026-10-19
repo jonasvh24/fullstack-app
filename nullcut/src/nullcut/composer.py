@@ -12,6 +12,12 @@ the UI can answer "why is this here?".
   6  B-roll over jump cuts and long stretches, dialogue continuing under it
   7  music bed fitted to the edit, ducked under speech; SFX on the profile's share
   8  hard cuts (the shipped styles allow nothing else)
+
+Given the previous timeline (`prior`), every rule tries the decisions it made last
+time first: a zoom on the same spoken word, a B-roll over the same cut with the
+same shot and in-point. Each is anchored to source media, not output time, so it
+survives sentences moving around it. A refinement then changes only the items it
+actually touched, and only those re-render (plan §7).
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from . import compiler, music, plan as plan_mod, styles
+from . import compiler, music, musicgen, plan as plan_mod, styles
 from .compiler import Item, contiguous
 
 SNAP_WINDOW_S = 0.12
@@ -189,12 +195,27 @@ def place_zoom(layout: _Layout, clips: dict, word: dict, z: dict, scale: float,
     layout.take(start, end)
     return {"start_s": round(start, 3), "end_s": round(end, 3), "scale": round(scale, 3),
             "cx": cx, "cy": cy, "ease_s": z["ease_s"], "kind": "punch", "rule": rule,
-            "word": word["w"]}
+            "word": word["w"], "anchor": list(word["src"])}
+
+
+def _gaps(shot: dict, taken: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Unused source ranges of a B-roll shot, 0.2 s clear of each end."""
+    lo, hi = shot["start"] + 0.2, shot["end"] - 0.2
+    out, cur = [], lo
+    for a, b in sorted(taken):
+        if a > cur:
+            out.append((cur, min(a, hi)))
+        cur = max(cur, b)
+    if hi > cur:
+        out.append((cur, hi))
+    return [(a, b) for a, b in out if b > a]
 
 
 def place_broll(layout: _Layout, pool: list[dict], used: dict, a: float, length: float,
-                spoken: list[dict], rule: str, min_len: float | None = None) -> dict | None:
-    rooms = [s["end"] - s["start"] - 0.4 - used.get(s["id"], 0.0) for s in pool]
+                spoken: list[dict], rule: str, min_len: float | None = None,
+                prefer: tuple[str, float] | None = None) -> dict | None:
+    rooms = [max((b - a_ for a_, b in _gaps(s, used.get(s["id"], []))), default=0.0)
+             for s in pool]
     if min_len is not None and rooms and max(rooms) < length:
         # A shorter insert beats none, down to the style's minimum.
         shorter = max(rooms)
@@ -206,20 +227,24 @@ def place_broll(layout: _Layout, pool: list[dict], used: dict, a: float, length:
     if a < layout.face_until or b > layout.duration - 0.5 or not layout.free(a, b):
         return None
     terms = {_tok(w["w"]) for w in spoken if a <= w["s"] < b} - plan_mod.STOP
-    best, best_score = None, -1.0
+    best, best_score, src_in = None, -1.0, 0.0
     for shot in pool:
-        room = shot["end"] - shot["start"] - 0.4 - used.get(shot["id"], 0.0)
-        if room < length:
+        gaps = _gaps(shot, used.get(shot["id"], []))
+        fits = [g for g in gaps if g[1] - g[0] >= length - 1e-6]
+        if not fits:
             continue
+        if prefer and prefer[0] == shot["id"] and any(
+                g[0] - 1e-6 <= prefer[1] and prefer[1] + length <= g[1] + 1e-6 for g in gaps):
+            best, src_in = shot, prefer[1]  # last time's shot and in-point, still free
+            break
         cap = {_tok(w) for w in (shot.get("caption") or "").split()}
         # Matching words beat a pretty shot; reuse is the last resort.
         score = 2.0 * len(terms & cap) + shot.get("score", 0.5) - 0.5 * (shot["id"] in used)
         if score > best_score:
-            best, best_score = shot, score
+            best, best_score, src_in = shot, score, fits[0][0]
     if best is None:
         return None
-    src_in = best["start"] + 0.2 + used.get(best["id"], 0.0)
-    used[best["id"]] = used.get(best["id"], 0.0) + length
+    used.setdefault(best["id"], []).append((src_in, src_in + length))
     layout.take(a, b)
     matched = sorted(terms & {_tok(w) for w in (best.get("caption") or "").split()})
     return {"start_s": round(a, 3), "end_s": round(b, 3), "clip_id": best["clip_id"],
@@ -259,8 +284,8 @@ def subject_track(clip: dict, src_in: float, duration: float) -> list[list[float
 
 
 def compose(index: dict, plan_doc: dict, brief: dict, fps: float,
-            library: list[dict] | None = None) -> Composition:
-    style = styles.apply_extras(styles.get(plan_doc["style"]), brief["extras"])
+            library: list[dict] | None = None, prior: dict | None = None) -> Composition:
+    style = styles.for_brief(plan_doc["style"], brief)
     clips = {c["id"]: c for c in index["clips"]}
     tables = _segment_items(index, style)
 
@@ -280,8 +305,14 @@ def compose(index: dict, plan_doc: dict, brief: dict, fps: float,
         raise ValueError("plan has no usable material")
 
     # Rule 7 first: the beat grid has to exist before cuts can snap to it.
-    track = music.choose(brief["music"], style, library or [])
     duration = sum(it.frames for it in items) / fps
+    gen = None
+    if brief["music"].get("mode") == "generate" and style["music"]["presence"]:
+        gen = musicgen.spec(brief["music"], style, [c["id"] for c in index["clips"]])
+        track = (musicgen.grid_track(gen, duration) if gen["backend"] == "builtin"
+                 else musicgen.command_track(gen, duration))
+    else:
+        track = music.choose(brief["music"], style, library or [])
     music_doc = None
     snapped = 0
     if track:
@@ -290,9 +321,11 @@ def compose(index: dict, plan_doc: dict, brief: dict, fps: float,
             from_end = [duration - b for b in _music_beats_out(track, pieces)]
             snapped = snap_to_beats(items, from_end, index, fps)
             duration = sum(it.frames for it in items) / fps
+            if gen and gen["backend"] == "builtin":
+                track = musicgen.grid_track(gen, duration)  # same grid, measured from the end
             pieces = music.fit_plan(track, duration)
         music_doc = {"id": track["id"], "track_id": track["id"], "name": track["name"],
-                     "path": track["path"],
+                     "path": track.get("path"), "generated": bool(gen),
                      "licence": track["licence"], "bpm": track["bpm"], "pieces": pieces,
                      "duration": track["duration"],
                      "under_speech_db": style["music"]["under_speech_db"],
@@ -308,6 +341,12 @@ def compose(index: dict, plan_doc: dict, brief: dict, fps: float,
                               "start_s": round(starts[ks[0]], 3),
                               "end_s": round(starts[ks[-1]] + items[ks[-1]].frames / fps, 3),
                               "music_energy": beat.get("music_energy", "mid")})
+    if music_doc and gen and gen["backend"] == "builtin":
+        # Now the sections are known: write the bed to them (cached per exact edit).
+        track = musicgen.builtin_track(gen, duration, [[b["start_s"], b["end_s"],
+                                                         b["music_energy"]] for b in beats_out])
+        music_doc.update({"id": track["id"], "path": track["path"], "pieces": [(0.0, duration)],
+                          "duration": track["duration"]})
 
     # Output-time words, each tagged with whether its beat asked to punch it.
     emph_by_beat = {b["id"]: {_tok(w) for w in b.get("emphasis", [])} for b in plan_doc["beats"]}
@@ -318,7 +357,8 @@ def compose(index: dict, plan_doc: dict, brief: dict, fps: float,
             a, b = max(t0, t0 + w["s"] - it.src_in), min(t1, t0 + w["e"] - it.src_in)
             if b > a:
                 words.append({"w": w["w"], "s": a, "e": b,
-                              "emph": _tok(w["w"]) in emph_by_beat.get(it.beat_id, set())})
+                              "emph": _tok(w["w"]) in emph_by_beat.get(it.beat_id, set()),
+                              "src": (it.clip_id, round(w["s"], 2))})
 
     layout = _Layout(items, fps)
     hook = next((b for b in beats_out if b["role"] == "hook"), None)
@@ -327,6 +367,10 @@ def compose(index: dict, plan_doc: dict, brief: dict, fps: float,
         layout.face_until = hook["start_s"] + HOOK_FACE_S
     z = style["zoom"]
     zooms: list[dict] = []
+    prior = prior or {}
+    prior_zoom = {tuple(x["anchor"]) for x in prior.get("zooms", []) if x.get("anchor")}
+    prior_broll = {tuple(x["anchor"]): (x["shot_id"], x["src_in"])
+                   for x in prior.get("broll", []) if x.get("anchor")}
 
     # Rule 4: punches on emphasis words at the profile's rate, or slow drifts.
     want = int(round(z["per_minute"] * duration / 60))
@@ -341,12 +385,15 @@ def compose(index: dict, plan_doc: dict, brief: dict, fps: float,
             layout.take(a, b)
             zooms.append({"start_s": round(a, 3), "end_s": round(b, 3), "scale": z["scale_max"],
                           "cx": cx, "cy": cy, "ease_s": b - a, "kind": "drift",
-                          "rule": "slow push-in: cinematic drift on a long take"})
+                          "rule": "slow push-in: cinematic drift on a long take",
+                          "anchor": [it.clip_id, round(it.src_in, 2)]})
     else:
         min_gap = max(z["hold_s"] + 2 * z["ease_s"], 30.0 / max(z["per_minute"], 0.1))
         placed_at: list[float] = []
 
         def punch(cands: list[dict], scale: float, why: str) -> None:
+            # The words punched last time go first, so a refinement keeps its zooms.
+            cands = sorted(cands, key=lambda w: (w["src"] not in prior_zoom, w["s"]))
             for w in cands:
                 if len(zooms) >= want:
                     return
@@ -372,19 +419,24 @@ def compose(index: dict, plan_doc: dict, brief: dict, fps: float,
     pool = [dict(s, clip_id=c["id"]) for c in index["clips"] if not c["words"]
             for s in c.get("shots", [])]
     pool.sort(key=lambda s: -s.get("score", 0.5))
-    used: dict[str, float] = {}
+    used: dict[str, list[tuple[float, float]]] = {}
     broll: list[dict] = []
     br = style["broll"]
     budget = br["density"] * duration
     length = (br["min_s"] + br["max_s"]) / 2
-    for cut in _cuts(items, fps):
+    starts = _starts(items, fps)
+    cut_points = [(starts[k + 1], (items[k + 1].clip_id, round(items[k + 1].src_in, 2)))
+                  for k in range(len(items) - 1) if not contiguous(items[k], items[k + 1], fps)]
+    cut_points.sort(key=lambda c: (c[1] not in prior_broll, c[0]))
+    for cut, anchor in cut_points:
         left = budget - sum(x["end_s"] - x["start_s"] for x in broll)
         if left < br["min_s"] or not pool:
             break
         want = min(length, left)
         x = place_broll(layout, pool, used, cut - want / 2, want, words,
-                        "B-roll over a jump cut", br["min_s"])
+                        "B-roll over a jump cut", br["min_s"], prefer=prior_broll.get(anchor))
         if x:
+            x["anchor"] = list(anchor)
             broll.append(x)
 
     # Rule 3: no stretch longer than max_static without a cut, zoom or B-roll.
@@ -440,7 +492,8 @@ def compose(index: dict, plan_doc: dict, brief: dict, fps: float,
     cap = {"enabled": cap_mode != "off", "style": cap_mode if cap_mode != "off" else "clean",
            "max_words": style["captions"]["max_words"], "case": style["captions"]["case"],
            "highlight": style["captions"]["highlight"],
-           "emphasis": style["captions"]["emphasis"]}
+           "emphasis": style["captions"]["emphasis"],
+           "scale": style["captions"].get("scale", 1.0)}
 
     n_cuts = len(_cuts(items, fps))
     report = {

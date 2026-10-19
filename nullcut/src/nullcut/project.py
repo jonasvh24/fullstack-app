@@ -90,7 +90,8 @@ class Project:
     def clip_index(self) -> dict:
         if not self.clip_index_path.exists():
             raise SystemExit(f"{self.id}: not analysed yet, run `nullcut ingest` first")
-        return read_json(self.clip_index_path)
+        from . import learn  # scores follow the creator's learned weights, when adopted
+        return learn.apply(read_json(self.clip_index_path))
 
     def next_version(self, subdir: str, stem: str, suffix: str) -> tuple[int, Path]:
         pattern = re.compile(rf"^{re.escape(stem)}\.v(\d+){re.escape(suffix)}$")

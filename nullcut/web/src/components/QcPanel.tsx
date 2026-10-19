@@ -7,7 +7,11 @@ function Verdict({ ok, yes, no }: { ok: boolean | null; yes: string; no: string 
   return <span className={`tag ${ok ? "tag-ok" : "tag-bad"}`}>{ok ? yes : no}</span>;
 }
 
-export function QcPanel({ qc, title = "QC" }: { qc: Qc; title?: string }) {
+/**
+ * Gate checks and style match for one render. While `pending` (Phase 3: a refinement's preview
+ * plays before its style is measured), the style score and detail are replaced by a note.
+ */
+export function QcPanel({ qc, title = "QC", pending = false }: { qc: Qc; title?: string; pending?: boolean }) {
   const detail = qc.style_detail && Object.keys(qc.style_detail).length > 0 ? qc.style_detail : undefined;
   const count = detail ? Object.keys(detail).length : Object.keys(qc.style_match ?? {}).length;
   const flagged = flaggedCount(qc.style_match, detail);
@@ -32,18 +36,25 @@ export function QcPanel({ qc, title = "QC" }: { qc: Qc; title?: string }) {
       </dl>
       <div className="style-head">
         <h4 className="sub-title">Style match</h4>
-        {overall != null && (
+        {pending && <span className="tag tag-running">measuring</span>}
+        {!pending && overall != null && (
           <span className={`style-overall mono ${overall < MATCH_THRESHOLD ? "warn-text" : ""}`} title="Mean of the per-parameter scores">
             {Math.round(overall * 100)}%
           </span>
         )}
-        {count > 0 && (
+        {!pending && count > 0 && (
           <span className={flagged ? "warn-text small-text" : "dim small-text"}>
             {flagged ? `${flagged} under ${MATCH_THRESHOLD * 100}%` : "all at or above 80%"}
           </span>
         )}
       </div>
-      <MatchList scores={qc.style_match} detail={detail} />
+      {pending ? (
+        <p className="dim" aria-live="polite">
+          Measuring the style…
+        </p>
+      ) : (
+        <MatchList scores={qc.style_match} detail={detail} />
+      )}
     </section>
   );
 }

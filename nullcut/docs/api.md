@@ -180,3 +180,95 @@ interface CompareRow { key: string; label: string; unit: string; min: number; ma
 | GET | `/api/projects/{id}/try` | | `TryRender[]` (latest try run; empty array if none) |
 
 `POST /api/projects/{id}/preview` and `/master` render every format the brief asks for. `GET /api/projects/{id}/renders` lists all of them with `format`. The master job's result keeps the Phase 1 shape: `{render, package}`, where `render` is the 16:9 one (or the 9:16 one when the brief is 9:16 only), and `package.thumbnails` holds three ranked thumbnails.
+
+## Phase 3 additions
+
+Chat refinement, learned highlight weights, generated music, exports for Resolve.
+
+### Types
+
+```ts
+interface Brief {                     // Phase 2 fields plus:
+  music: { mode: "none" | "library" | "track" | "generate"; mood: string; energy: "low" | "mid" | "high"; track_id: string | null };
+  overrides: Record<string, Record<string, any>>;   // written by refinements; the UI shows, never edits
+}
+
+interface Render {                    // Phase 2 fields plus:
+  qc_pending: boolean;                // true: the preview plays, style_detail is still being measured
+  qc: { /* ... */ style_overall: number | null };   // null while qc_pending
+  encoded: number | null;             // items encoded for this render
+  cached: number | null;              // items reused from the render cache
+  audio_cached: boolean | null;       // true when the mix was reused
+}
+
+interface Change { param: string; from: any; to: any; label: string }   // "zooms per minute 12 → 6"
+
+interface RefineStep {
+  id: number; at: string;             // ISO 8601
+  instruction: string;                // what the creator typed
+  kind: "tweak" | "structural" | "undo";
+  by: "rules" | string;               // "rules" or "llm:<model>"
+  summary: string;                    // one line: what changed
+  changes: Change[];                  // tweaks only
+  unmapped: string[];                 // clauses that were not understood (the rest was applied)
+  labelled: number;                   // examples recorded for the learned weights
+  undone: boolean; undoes: number | null;
+  plan_version: number;
+  render: { version: number; items: number; encoded: number; cached: number;
+            audio_remixed: boolean } | null;   // null until the preview is rendered
+  timing: { interpret_s: number; apply_s: number; queued_s?: number; render_s: number;
+            to_preview_s: number; qc_s?: number } | null;
+}
+
+interface RefineResponse {
+  step: RefineStep | null;            // null when the instruction was not understood
+  message: string | null;             // set when step is null: why, with examples to try
+  job: Job | null;                    // kind "refine". While running, job.result may already hold
+                                      // {step, render}: the preview is playable then; QC follows.
+                                      // Final result: {step, render} with QC filled in.
+}
+
+interface Learning {
+  examples: number; explicit: number; kept: number; deleted: number; projects: number;
+  min_examples: number;               // explicit choices needed before a refit can adopt
+  hand_weights: Record<string, number>;           // feature -> weight
+  last_fit: null | { fitted_at: string; examples: number; explicit: number; adopted: boolean;
+                     reason?: string; bias?: number; coef?: Record<string, number>;
+                     cv?: { learned_auc: number; hand_auc: number;   // adoption is decided on AUC
+                            learned_logloss: number; hand_logloss: number;
+                            learned_accuracy: number; hand_accuracy: number } };
+  active: "hand" | "learned";
+  new_since_fit: boolean;
+  next_refit: string | null;          // ISO local time of the nightly refit, null when disabled
+}
+
+interface ExportCheck {
+  ok: boolean; version?: string;      // "1.8"
+  errors: string[]; warnings: string[];   // other fields absent when the export itself failed
+  spine_clips: number; connected_clips: number; duration_s: number; fps: number;
+  roundtrip: { read: boolean; clips?: number; expected?: number; durations_match?: boolean;
+               broll?: number; broll_expected?: number };
+}
+
+interface Package {                   // Phase 2 fields plus:
+  files: { /* ... */ cube: string | null };   // the grade as a 3D LUT
+  export_checks: { fcpxml: ExportCheck } | null;
+}
+```
+
+`GET /api/health` adds `musicgen: {backend: "builtin" | "command", licence: string}`. Its `llm.url` and `llm.model` are `null` when no LLM is configured.
+
+The refine job's running and final `result` is `{step: RefineStep, render: Render}`; `render` is the first format, the 9:16 one of a `both` brief is in `GET /renders`.
+
+### Endpoints
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | `/api/projects/{id}/refine` | `{text}` | `RefineResponse`; 400 `{detail}` when it cannot apply (a locked beat, no matching sentence: the detail says which); 409 while a refinement is rendering |
+| POST | `/api/projects/{id}/undo` | | `RefineResponse` (kind `undo`) |
+| GET | `/api/projects/{id}/refinements` | | `RefineStep[]`, oldest first |
+| GET | `/api/learning` | | `Learning` |
+| POST | `/api/learning/refit` | | `Learning["last_fit"]` (synchronous, well under a second) |
+| DELETE | `/api/learning` | | `Learning` (examples and weights removed; back to hand weights) |
+
+Refinement examples the rules understand without an LLM (English and Dutch): "less zoom", "no B-roll", "music quieter", "generate the music", "warmer", "black and white", "word by word captions", "highlight in red", "bigger captions", "punchier first 15 seconds", "slower", "make it 2:30", "30 seconds shorter", "vertical version too", "switch to the documentary style", "drop the part about pricing", "remove beat 3", "bring back the line about the lake", "open on the sunset instead", "end with the thank-you line", "move X before Y", "swap beats 2 and 3", "shorten the setup", "undo". Anything else goes to the LLM when one is reachable.

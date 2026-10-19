@@ -1789,3 +1789,221 @@ textarea.input {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ---------- Phase 3 ---------- */
+
+/* Preview: refine chat beside the player, above QC */
+
+.player-grid.with-side {
+  grid-template-columns: minmax(0, 1fr) 360px;
+}
+.player-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+.refine {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-2);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.rf-log {
+  list-style: none;
+  margin: 0;
+  padding: 0 2px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 340px;
+  min-height: 72px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.rf-empty {
+  color: var(--fg-dim);
+  font-size: 12px;
+  padding: 6px 0;
+}
+.rf-turn {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rf-msg {
+  margin: 0;
+  max-width: 100%;
+  border-radius: var(--radius);
+  font-size: 12px;
+  word-break: break-word;
+}
+.rf-user {
+  align-self: flex-end;
+  max-width: 85%;
+  padding: 4px 8px;
+  background: var(--accent-soft);
+  border: 1px solid rgba(91, 127, 255, 0.35);
+  color: var(--fg);
+}
+.rf-sys {
+  align-self: stretch;
+  padding: 6px 8px;
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--line-2);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rf-sys.rf-warn {
+  color: var(--warn);
+  border-left-color: var(--warn);
+}
+.rf-sys.rf-error {
+  color: var(--err);
+  border-left-color: var(--err);
+  font-family: var(--mono);
+}
+.rf-sys.rf-live {
+  border-left-color: var(--accent-hi);
+}
+.rf-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.rf-summary {
+  color: var(--fg);
+}
+.rf-changes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.rf-changes li {
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+.rf-changes li::before {
+  content: "- ";
+  color: var(--fg-mute);
+}
+.rf-unmapped {
+  font-size: 11px;
+  color: var(--fg-mute);
+}
+.rf-stats {
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+.rf-progress {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rf-turn.is-undone .rf-user,
+.rf-turn.is-undone .rf-sys {
+  opacity: 0.55;
+}
+.rf-turn.is-undone .rf-user,
+.rf-turn.is-undone .rf-summary {
+  text-decoration: line-through;
+  text-decoration-color: var(--fg-mute);
+}
+.rf-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.rf-chip {
+  font-family: var(--mono);
+  font-weight: 400;
+}
+.rf-form {
+  display: flex;
+  gap: 6px;
+}
+.rf-form .input {
+  flex: 1 1 auto;
+}
+
+/* Brief: refinements applied, generated music */
+
+.overrides-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.musicgen-note {
+  margin-top: -4px;
+}
+
+/* Deliver: export check and Resolve help */
+
+.downloads li {
+  grid-template-columns: 128px minmax(0, 1fr);
+}
+.export-check {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+.check-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 11px;
+  word-break: break-word;
+}
+.steps-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Styles: learned highlights */
+
+.learn-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+.learn-col {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+@media (max-width: 1100px) {
+  .player-grid.with-side {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 1000px) {
+  .learn-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.learn-auc {
+  font-size: 14px;
+  color: var(--fg);
+}

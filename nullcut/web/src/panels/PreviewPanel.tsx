@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { api, errorMessage } from "../api/client";
-import type { Clip, TimelineSummary } from "../api/types";
+import type { Clip, Render, TimelineSummary } from "../api/types";
 import { ErrorText } from "../components/ErrorText";
 import { JobProgress } from "../components/JobProgress";
 import { FormatToggle, useFormatRenders } from "../components/FormatToggle";
@@ -9,12 +9,13 @@ import { fps, tc, versioned } from "../lib/format";
 import { isActive, latestOfKind } from "../lib/jobs";
 import { href } from "../lib/router";
 import type { ProjectContext } from "../pages/ProjectPage";
+import { RefinePanel, refineResult } from "./RefinePanel";
 import { TimelineCanvas } from "./TimelineCanvas";
 
 export function PreviewPanel({ ctx }: { ctx: ProjectContext }) {
-  const { project, renders, jobs, onJobStarted } = ctx;
+  const { project, renders, jobs, onJobStarted, refreshRenders } = ctx;
   const pid = encodeURIComponent(project.id);
-  const { render: preview, formats, format, setFormat } = useFormatRenders(renders, "preview");
+  const { render: stored, formats, format, setFormat } = useFormatRenders(renders, "preview");
   const [video, setVideo] = useState<HTMLVideoElement | null>(null);
   const [timeline, setTimeline] = useState<TimelineSummary | null>(null);
   const [tlState, setTlState] = useState<"loading" | "ready" | "missing" | "error">("loading");
@@ -22,7 +23,21 @@ export function PreviewPanel({ ctx }: { ctx: ProjectContext }) {
   const [startError, setStartError] = useState<string | null>(null);
 
   const previewJob = latestOfKind(jobs, "preview");
-  const rendering = isActive(previewJob);
+  const refineJob = latestOfKind(jobs, "refine");
+  const refining = isActive(refineJob);
+  const rendering = isActive(previewJob) || refining;
+
+  // A refinement's preview is playable before its job ends (QC follows). Show it at once,
+  // and refetch renders so the other format of a "both" brief appears too.
+  const live = refining ? refineResult(refineJob)?.render ?? null : null;
+  const preview: Render | null =
+    live && (!stored || (live.version > stored.version && (live.format ?? "16:9") === (stored.format ?? "16:9")))
+      ? live
+      : stored;
+  const liveKey = live ? `${refineJob?.id}:${live.version}` : null;
+  useEffect(() => {
+    if (liveKey) void refreshRenders();
+  }, [liveKey, refreshRenders]);
   const clips = useMemo(() => new Map<string, Clip>(project.clips.map((c) => [c.id, c])), [project.clips]);
 
   useEffect(() => {
@@ -69,7 +84,7 @@ export function PreviewPanel({ ctx }: { ctx: ProjectContext }) {
         <span className="spacer" />
         <FormatToggle formats={formats} value={format} onChange={setFormat} />
         <button type="button" className="btn" onClick={() => void rerender()} disabled={rendering}>
-          {rendering ? "Rendering" : "Re-render preview"}
+          {isActive(previewJob) ? "Rendering" : "Re-render preview"}
         </button>
         <a className="btn btn-primary" href={href(`/p/${pid}/deliver`)}>
           Deliver
@@ -83,7 +98,7 @@ export function PreviewPanel({ ctx }: { ctx: ProjectContext }) {
           No preview render yet. <a href={href(`/p/${pid}/storyboard`)}>Render one from the storyboard.</a>
         </p>
       ) : (
-        <div className="player-grid">
+        <div className="player-grid with-side">
           <div className={`player ${preview.format === "9:16" ? "portrait" : ""}`}>
             <video
               key={`${preview.url}#${preview.version}#${preview.format}`}
@@ -94,7 +109,14 @@ export function PreviewPanel({ ctx }: { ctx: ProjectContext }) {
               playsInline
             />
           </div>
-          <QcPanel qc={preview.qc} title={`QC · preview v${preview.version} · ${preview.format ?? "16:9"}`} />
+          <div className="player-side">
+            <RefinePanel ctx={ctx} refineJob={refineJob} />
+            <QcPanel
+              qc={preview.qc}
+              pending={!!preview.qc_pending}
+              title={`QC · preview v${preview.version} · ${preview.format ?? "16:9"}`}
+            />
+          </div>
         </div>
       )}
 

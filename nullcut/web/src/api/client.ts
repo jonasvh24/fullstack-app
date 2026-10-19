@@ -9,12 +9,16 @@ import type {
   CreateProjectResponse,
   Health,
   Job,
+  Learning,
+  LearningFit,
   Package,
   Plan,
   PlanEditBody,
   PlanRequestBody,
   ProjectDetail,
   ProjectSummary,
+  RefineResponse,
+  RefineStep,
   Render,
   Segment,
   Style,
@@ -134,4 +138,13 @@ export const api = {
   extractThumbnailProfile: (body: ExtractBody) => request<Job>("POST", "/api/thumbnail-profiles/extract", body),
   startTry: (id: string, body: TryBody) => request<Job>("POST", `/api/projects/${enc(id)}/try`, body),
   getTry: (id: string) => request<TryRender[]>("GET", `/api/projects/${enc(id)}/try`),
+
+  // Phase 3
+  refine: (id: string, text: string) =>
+    request<RefineResponse>("POST", `/api/projects/${enc(id)}/refine`, { text }),
+  undo: (id: string) => request<RefineResponse>("POST", `/api/projects/${enc(id)}/undo`),
+  refinements: (id: string) => request<RefineStep[]>("GET", `/api/projects/${enc(id)}/refinements`),
+  learning: () => request<Learning>("GET", "/api/learning"),
+  refit: () => request<LearningFit>("POST", "/api/learning/refit"),
+  resetLearning: () => request<Learning>("DELETE", "/api/learning"),
 };

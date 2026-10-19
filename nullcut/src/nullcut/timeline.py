@@ -92,13 +92,19 @@ def build(items: list[Item], index: dict, meta: dict) -> otio.schema.Timeline:
             available_range=otio.opentime.TimeRange(
                 otio.opentime.RationalTime(0, fps),
                 otio.opentime.RationalTime(round(m.get("duration", total / fps) * fps), fps)))
-        mc = otio.schema.Clip(name=m["name"], media_reference=ref,
-                              source_range=otio.opentime.TimeRange(
-                                  otio.opentime.RationalTime(round(m["pieces"][0][0] * fps), fps),
-                                  otio.opentime.RationalTime(total, fps)))
-        mc.metadata["nullcut"] = {"pieces": m["pieces"], "licence": m["licence"],
-                                  "note": "looped on bar lines; pieces lists the exact ranges"}
-        a2.append(mc)
+        # One clip per bar-line piece, so a loop conforms as the loop it is.
+        placed = 0
+        for k, (s0, s1) in enumerate(m["pieces"]):
+            frames = min(round((s1 - s0) * fps), total - placed)
+            if frames <= 0:
+                break
+            mc = otio.schema.Clip(name=f"{m['name']} ({k + 1})", media_reference=ref,
+                                  source_range=otio.opentime.TimeRange(
+                                      otio.opentime.RationalTime(round(s0 * fps), fps),
+                                      otio.opentime.RationalTime(frames, fps)))
+            mc.metadata["nullcut"] = {"licence": m["licence"], "piece": k}
+            a2.append(mc)
+            placed += frames
         tl.tracks.append(a2)
     tl.metadata["nullcut"] = {
         "schema": SCHEMA,

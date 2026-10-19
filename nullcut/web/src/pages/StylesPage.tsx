@@ -4,6 +4,7 @@ import type { CompareRow, Style, ThumbnailProfile } from "../api/types";
 import { CompareChart, Glyph, SERIES, type ChartSeries } from "../components/CompareChart";
 import { ErrorText } from "../components/ErrorText";
 import { ExtractForm } from "../components/ExtractForm";
+import { LearnedHighlights } from "../components/LearnedHighlights";
 import { flattenParams, humanise } from "../lib/format";
 
 const MIN_COMPARE = 2;
@@ -346,6 +347,8 @@ export function StylesPage() {
           onDone={() => void loadProfiles()}
         />
       </section>
+
+      <LearnedHighlights />
     </div>
   );
 }

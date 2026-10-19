@@ -7,6 +7,7 @@ const LABEL: Record<string, string> = {
   preview: "Preview render",
   master: "Master render",
   music_import: "Music import",
+  refine: "Refinement",
 };
 
 /** Known kinds get a fixed label; Phase 2 kinds are not named by the contract, so humanise them. */

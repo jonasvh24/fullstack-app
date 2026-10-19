@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { api, errorMessage } from "../api/client";
-import type { Package, Thumbnail } from "../api/types";
+import type { ExportCheck, Package, Thumbnail } from "../api/types";
 import { FormatToggle, useFormatRenders } from "../components/FormatToggle";
 import { ErrorText } from "../components/ErrorText";
 import { JobProgress } from "../components/JobProgress";
@@ -49,6 +49,70 @@ function CopyButton({ text, target }: { text: string; target: RefObject<HTMLText
 
 function Check({ ok, label }: { ok: boolean; label: string }) {
   return <span className={`tag ${ok ? "tag-ok" : "tag-bad"}`}>{label}</span>;
+}
+
+// The contract's ExportCheck does not carry the FCPXML version; the exporter writes 1.8.
+const FCPXML_VERSION = "1.8";
+
+function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** One line for the FCPXML structural check and read-back, then errors and warnings. */
+function ExportCheckLine({ check }: { check: ExportCheck }) {
+  const parts: string[] = [];
+  if (check.spine_clips != null) parts.push(plural(check.spine_clips, "cut"));
+  if (check.connected_clips != null) parts.push(plural(check.connected_clips, "connected clip"));
+  const rt = check.roundtrip;
+  if (rt?.read) parts.push(rt.durations_match ? "read back identically" : "read back with differences");
+  else if (rt) parts.push("not read back");
+  return (
+    <div className="export-check">
+      <p className={check.ok ? "ok-text" : "err-inline"}>
+        FCPXML {FCPXML_VERSION} {check.ok ? "checked" : "check failed"}
+        {parts.length > 0 && `: ${parts.join(", ")}`}
+      </p>
+      {check.errors.length > 0 && (
+        <ul className="check-list err-inline mono">
+          {check.errors.map((e, i) => (
+            <li key={i}>{e}</li>
+          ))}
+        </ul>
+      )}
+      {check.warnings.length > 0 && (
+        <ul className="check-list dim mono">
+          {check.warnings.map((w, i) => (
+            <li key={i}>{w}</li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function ResolveHelp({ hasCube }: { hasCube: boolean }) {
+  return (
+    <section className="pkg-block" aria-labelledby="resolve-h">
+      <h3 id="resolve-h" className="section-title">
+        Open in Resolve
+      </h3>
+      <ol className="steps-list">
+        <li>
+          File › Import › Timeline, then choose the <span className="mono">.fcpxml</span> (or the{" "}
+          <span className="mono">.otio</span> on Resolve 18.5 and later).
+        </li>
+        <li>
+          Import the <span className="mono">.srt</span> onto a subtitle track.
+        </li>
+        {hasCube && (
+          <li>
+            Apply the <span className="mono">.cube</span> on a colour node.
+          </li>
+        )}
+      </ol>
+      <p className="field-help">Keep the source media where it is; the timeline links to it by path.</p>
+    </section>
+  );
 }
 
 function ThumbnailsBlock({ thumbs }: { thumbs: Thumbnail[] }) {
@@ -106,6 +170,7 @@ function PackageView({ pkg, mp4, mp4Vertical }: { pkg: Package; mp4: string | nu
     ["VTT", pkg.files.vtt],
     ["OTIO", pkg.files.otio],
     ["FCPXML", pkg.files.fcpxml],
+    ["Grade LUT (.cube)", pkg.files.cube ?? null],
     ...thumbs.map((t): [string, string] => [`PNG ${t.rank}`, t.url]),
   ];
   return (
@@ -184,7 +249,10 @@ function PackageView({ pkg, mp4, mp4Vertical }: { pkg: Package; mp4: string | nu
               </li>
             ))}
         </ul>
+        {pkg.export_checks?.fcpxml && <ExportCheckLine check={pkg.export_checks.fcpxml} />}
       </section>
+
+      {(pkg.files.fcpxml || pkg.files.otio) && <ResolveHelp hasCube={!!pkg.files.cube} />}
     </div>
   );
 }
@@ -265,7 +333,7 @@ export function DeliverPanel({ ctx }: { ctx: ProjectContext }) {
               playsInline
             />
           </div>
-          <QcPanel qc={master.qc} title={`QC · master v${master.version} · ${master.format ?? "16:9"}`} />
+          <QcPanel qc={master.qc} pending={!!master.qc_pending} title={`QC · master v${master.version} · ${master.format ?? "16:9"}`} />
         </div>
       )}
 

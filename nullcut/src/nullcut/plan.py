@@ -41,7 +41,9 @@ BRIEF_DEFAULT = {
     "extras": {"zoom": 1.0, "broll": 1.0, "hook_required": True},
     "thumbnail_profile": "",
     "title_refs": "",
+    "overrides": {},   # refinement tweaks onto the style, absolute values (plan §6)
 }
+MUSIC_MODES = ("none", "library", "track", "generate")
 
 # Words that carry a claim or a jolt; the deterministic planner punches these.
 EMPHASIS_LEXICON = {
@@ -77,7 +79,12 @@ def save_brief(project: Project, brief: dict) -> dict:
     for k, v in brief.items():
         if k not in merged:
             continue
-        if isinstance(v, dict) and isinstance(merged[k], dict):
+        if k == "overrides":
+            # Replaced whole: a refinement or an undo sets the complete set.
+            if not isinstance(v, dict):
+                raise ValueError("overrides must be an object")
+            merged[k] = v
+        elif isinstance(v, dict) and isinstance(merged[k], dict):
             merged[k].update(v)
         else:
             merged[k] = v
@@ -91,6 +98,8 @@ def save_brief(project: Project, brief: dict) -> dict:
     styles.get(merged["style"])  # raises on unknown style
     if merged["captions"]["mode"] not in ("off", "clean", "word"):
         raise ValueError("captions must be off, clean or word")
+    if merged["music"]["mode"] not in MUSIC_MODES:
+        raise ValueError(f"music must be one of {', '.join(MUSIC_MODES)}")
     write_json(project.path("plans", "brief.json"), merged)
     return merged
 
@@ -570,7 +579,7 @@ def _questions_asked(project: Project) -> list[str]:
 def make_plan(project: Project, answers: dict | None = None, log: Log = print) -> dict:
     index = project.clip_index()
     brief = load_brief(project)
-    style = styles.apply_extras(styles.get(brief["style"]), brief["extras"])
+    style = styles.for_brief(brief["style"], brief)
     lengths = segment_lengths(index, style)
     usable = sum(lengths["body"].values())
     # A clarifying question saves a plan without beats; locks live on the last real one.
@@ -613,7 +622,9 @@ def make_plan(project: Project, answers: dict | None = None, log: Log = print) -
         write_json(project.path("plans", "questions.json"), asked + questions)
     doc = {"planner": planner, "style": style["id"], "summary": raw.get("summary", ""),
            "questions": [{"id": f"q{n + 1}", "text": t} for n, t in enumerate(questions)],
-           "beats": beats, "answers": answers, "brief": brief}
+           "beats": beats, "answers": answers, "brief": brief,
+           "excluded_ids": (previous or {}).get("excluded_ids", []),
+           "pinned_ids": (previous or {}).get("pinned_ids", [])}
     return _save(project, doc, style, lengths, log)
 
 
@@ -656,8 +667,10 @@ def edit_plan(project: Project, edits: list[dict], log: Log = print) -> dict:
     errors = validate(beats, pool, [])
     if errors:
         raise ValueError("; ".join(errors))
+    from . import learn
+    learn.from_plans(project.id, index, current["beats"], beats, "storyboard")
     brief = load_brief(project)
-    style = styles.apply_extras(styles.get(current["style"]), brief["extras"])
+    style = styles.for_brief(current["style"], brief)
     doc = {**current, "beats": beats, "questions": [], "planner": current["planner"],
            "brief": brief}
     return _save(project, doc, style, segment_lengths(index, style), log, edited=True)
@@ -667,17 +680,19 @@ def _save(project: Project, doc: dict, style: dict | None, lengths: dict, log: L
           edited: bool = False, persist: bool = True) -> dict:
     brief = doc.get("brief") or load_brief(project)
     sol = None
+    excluded = set(doc.get("excluded_ids", []))
     if doc["beats"] and style is not None:
         index = project.clip_index()
         pool = segment_pool(index)
         seg_len = {}
         for b in doc["beats"]:
+            b["dropped_ids"] = [s for s in b.get("dropped_ids", []) if s not in excluded]
             # Re-plans and edits bring back every sentence the beat was given;
             # the solver decides afresh what survives.
             # A locked beat is exactly what the creator saw: no resurrections.
             ids = b["segment_ids"] + ([] if edited or b.get("locked")
                                       else b.get("dropped_ids", []))
-            b["segment_ids"] = list(dict.fromkeys(ids))
+            b["segment_ids"] = [s for s in dict.fromkeys(ids) if s not in excluded]
             table = lengths["hook"] if b["role"] == "hook" else lengths["body"]
             for s in b["segment_ids"]:
                 seg_len[s] = table.get(s, 0.0)
@@ -689,7 +704,8 @@ def _save(project: Project, doc: dict, style: dict | None, lengths: dict, log: L
                                   if target else None, b.get("locked", False))
                     for b in doc["beats"]]
         sol = solver.solve(beats_in, seg_len, {s: pool[s]["score"] for s in pool}, target,
-                           brief["tolerance"], style["hook"]["max_s"])
+                           brief["tolerance"], style["hook"]["max_s"],
+                           must_keep=set(doc.get("pinned_ids", [])))
         for b, bi in zip(doc["beats"], beats_in):
             b["dropped_ids"] = sol.dropped[b["id"]]
             b["segment_ids"] = sol.kept[b["id"]]
@@ -713,14 +729,23 @@ def _save(project: Project, doc: dict, style: dict | None, lengths: dict, log: L
     return doc
 
 
+def restore_version(project: Project, version: int) -> dict:
+    """An earlier plan, saved again as the newest version (undo never rewrites history)."""
+    doc = read_json(project.path("plans", f"edit_plan.v{version}.json"))
+    new_version, path = project.next_version("plans", "edit_plan", ".json")
+    doc = {**doc, "version": new_version, "restored_from": version}
+    write_json(path, doc)
+    return doc
+
+
 def trial_plan(project: Project, style_id: str, log: Log = print) -> dict:
     """The current plan's content under another style, solved but never saved (plan §5:
     "try both" compares styles on the same story, not two different edits)."""
     from copy import deepcopy
 
     index = project.clip_index()
-    brief = {**load_brief(project), "style": style_id}
-    style = styles.apply_extras(styles.get(style_id), brief["extras"])
+    brief = {**load_brief(project), "style": style_id, "overrides": {}}
+    style = styles.for_brief(style_id, brief)
     lengths = segment_lengths(index, style)
     base = latest_plan(project, with_beats=True)
     if base:

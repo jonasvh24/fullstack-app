@@ -228,8 +228,10 @@ def cmd_brief(args: argparse.Namespace) -> int:
     if args.captions:
         updates["captions"] = {"mode": args.captions}
     if args.music:
-        updates["music"] = {"mode": "none" if args.music == "none" else "library",
-                            "mood": "" if args.music in ("none", "library") else args.music}
+        words = args.music.split()
+        mode = {"none": "none", "generate": "generate"}.get(words[0], "library")
+        mood = " ".join(w for w in words if w not in ("none", "library", "generate"))
+        updates["music"] = {"mode": mode, "mood": mood}
     brief = plan.save_brief(project, updates) if updates else plan.load_brief(project)
     print(json.dumps(brief, indent=2))
     return 0
@@ -290,6 +292,18 @@ def cmd_edit_render(args: argparse.Namespace) -> int:
 def cmd_music(args: argparse.Namespace) -> int:
     from . import music
 
+    if args.action == "generate":
+        from . import musicgen
+        sp = musicgen.spec({"mood": args.mood or "", "energy": args.energy},
+                           {"music": {"energy": args.energy}}, args.mood or "audition")
+        third = args.seconds / 3
+        sections = [[0, third, "low"], [third, 2 * third, "high"], [2 * third, args.seconds, "mid"]]
+        if sp["backend"] == "builtin":
+            track = musicgen.builtin_track(sp, args.seconds, sections)
+        else:
+            track = musicgen.command_track(sp, args.seconds)
+        print(f"  {track['path']}\n  {track['name']}  ({track['licence']})")
+        return 0
     if args.action == "import":
         if not args.folder:
             raise SystemExit("which folder? `nullcut music import <folder>`")
@@ -333,6 +347,92 @@ def cmd_try(args: argparse.Namespace) -> int:
         print(f"  {r['style']:<16} {r['overall']:.0%}  {project.path(r['path'])}"
               + (f"  (under 80 %: {weak})" if weak else ""))
     return 0
+
+
+def _print_step(step: dict) -> None:
+    from . import refine
+
+    print(f"  {step['kind']} by {step['by']}: {step['summary']}")
+    for c in step.get("changes", []):
+        print(f"    {refine._label(c)}")
+    for u in step.get("unmapped", []):
+        print(f"    not understood: {u}")
+    r, t = step.get("render"), step.get("timing")
+    if r and t:
+        audio = "audio re-mixed" if r["audio_remixed"] else "audio reused"
+        print(f"  re-encoded {r['encoded']} of {r['items']} items, {audio}; "
+              f"preview in {t['to_preview_s']:.1f} s (style measured in {t.get('qc_s', 0):.1f} s)")
+
+
+def cmd_refine(args: argparse.Namespace) -> int:
+    from . import pipeline, refine
+
+    project = proj.resolve(config.nullcut_home(args.home), args.project)
+    text = "undo" if args.command == "undo" else " ".join(args.text)
+    try:
+        out = pipeline.refine_edit(project, text, _progress, use_llm=not args.no_llm)
+    except refine.RefineError as exc:
+        sys.stderr.write("\n")
+        print(f"nullcut: {exc}", file=sys.stderr)
+        return 2
+    sys.stderr.write("\n")
+    if out["step"] is None:
+        print(out["interpretation"]["message"])
+        return 2
+    _print_step(out["step"])
+    print(f"  video     {project.path(out['render']['path'])}")
+    return 0
+
+
+def cmd_history(args: argparse.Namespace) -> int:
+    from . import refine
+
+    project = proj.resolve(config.nullcut_home(args.home), args.project)
+    for step in refine.history(project):
+        flag = " (undone)" if step["undone"] else ""
+        print(f"{step['id']:>3}  {step['at']}  \"{step['instruction']}\"{flag}")
+        _print_step(step)
+    return 0
+
+
+def cmd_learn(args: argparse.Namespace) -> int:
+    from . import learn
+
+    if args.action == "refit":
+        s = learn.refit()
+        print(json.dumps(s, indent=2))
+        return 0
+    if args.action == "reset":
+        for path in (learn.examples_path(), learn.model_path()):
+            path.unlink(missing_ok=True)
+        print("examples and learned weights removed; hand weights active")
+        return 0
+    print(json.dumps(learn.status(), indent=2))
+    return 0
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    from . import export
+
+    project = proj.resolve(config.nullcut_home(args.home), args.project)
+    latest = project.latest("timelines", "timeline", ".otio")
+    if not latest:
+        raise SystemExit("no timeline yet: run `nullcut preview` first")
+    version = args.timeline or latest[0]
+    path = project.path("timelines", f"timeline.v{version}.otio")
+    out = export.write_all(project, path, project.path("package"), version)
+    for k, v in out["files"].items():
+        if v:
+            print(f"  {k:<7} {project.path(v)}")
+    c = out["checks"]["fcpxml"]
+    print(f"  FCPXML  {'ok' if c['ok'] else 'FAILED'}: {c.get('spine_clips')} cuts, "
+          f"{c.get('connected_clips')} connected clips, read back "
+          f"{'identically' if c.get('roundtrip', {}).get('durations_match') else 'differently'}")
+    for e in c["errors"]:
+        print(f"    error: {e}")
+    for w in c["warnings"]:
+        print(f"    warning: {w}")
+    return 0 if c["ok"] else 1
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -388,7 +488,8 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--style", choices=sorted(__import__("nullcut.styles", fromlist=["x"])
                                              .all_styles()))
     b.add_argument("--captions", choices=("off", "clean", "word"))
-    b.add_argument("--music", help="none, library, or a mood such as 'calm piano'")
+    b.add_argument("--music", help="none, library, generate, or a mood such as 'calm piano' "
+                                 "(prefix with generate to synthesise: 'generate lofi')")
     b.set_defaults(func=cmd_brief)
 
     pl = sub.add_parser("plan", help="plan the edit against the brief and style")
@@ -403,9 +504,34 @@ def build_parser() -> argparse.ArgumentParser:
         r_.set_defaults(func=cmd_edit_render)
 
     mu = sub.add_parser("music", help="the music library")
-    mu.add_argument("action", nargs="?", choices=("list", "import"), default="list")
+    mu.add_argument("action", nargs="?", choices=("list", "import", "generate"), default="list")
     mu.add_argument("folder", nargs="?")
+    mu.add_argument("--mood", help="generate: e.g. lofi, cinematic, upbeat")
+    mu.add_argument("--energy", choices=("low", "mid", "high"), default="mid")
+    mu.add_argument("--seconds", type=float, default=60.0)
     mu.set_defaults(func=cmd_music)
+
+    rf = sub.add_parser("refine", help="change the edit in plain words, e.g. \"less zoom\"")
+    rf.add_argument("text", nargs="+")
+    rf.add_argument("--project")
+    rf.add_argument("--no-llm", action="store_true", help="rules only, never ask the LLM")
+    rf.set_defaults(func=cmd_refine)
+    un = sub.add_parser("undo", help="undo the last refinement")
+    un.add_argument("--project")
+    un.add_argument("--no-llm", action="store_true")
+    un.set_defaults(func=cmd_refine)
+    hi = sub.add_parser("history", help="the refinements made to an edit")
+    hi.add_argument("project", nargs="?")
+    hi.set_defaults(func=cmd_history)
+
+    le = sub.add_parser("learn", help="learned highlight weights: status, refit, reset")
+    le.add_argument("action", nargs="?", choices=("status", "refit", "reset"), default="status")
+    le.set_defaults(func=cmd_learn)
+
+    ex = sub.add_parser("export", help="OTIO, FCPXML and LUT for Resolve, with checks")
+    ex.add_argument("project", nargs="?")
+    ex.add_argument("--timeline", type=int, help="timeline version (default: latest)")
+    ex.set_defaults(func=cmd_export)
 
     st = sub.add_parser("styles", help="list, extract or compare style profiles")
     st.add_argument("action", nargs="?", choices=("list", "extract", "compare"), default="list")

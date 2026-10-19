@@ -1,10 +1,20 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { api, errorMessage } from "../api/client";
-import type { Brief, BriefFormat, CaptionMode, Energy, MusicMode, Style, ThumbnailProfile, Track } from "../api/types";
+import type {
+  Brief,
+  BriefFormat,
+  CaptionMode,
+  Energy,
+  Health,
+  MusicMode,
+  Style,
+  ThumbnailProfile,
+  Track,
+} from "../api/types";
 import { ErrorText } from "../components/ErrorText";
 import { JobProgress } from "../components/JobProgress";
 import { Segmented } from "../components/Segmented";
-import { flattenParams, humanise, lengthText, mss, parseLength, tc } from "../lib/format";
+import { flattenParams, humanise, lengthText, mss, paramValue, parseLength, tc } from "../lib/format";
 import { isActive, latestOfKind, useJobDone } from "../lib/jobs";
 import { navigate } from "../lib/router";
 import type { ProjectContext } from "../pages/ProjectPage";
@@ -20,6 +30,7 @@ const DEFAULT_BRIEF: Brief = {
   extras: { zoom: 1, broll: 1, hook_required: false },
   thumbnail_profile: "",
   title_refs: "",
+  overrides: {},
 };
 
 /** Fill any missing fields so the form is always fully controlled. */
@@ -31,6 +42,7 @@ function normalise(b: Partial<Brief> | null | undefined): Brief {
     format: src.format === "9:16" || src.format === "both" ? src.format : "16:9",
     thumbnail_profile: src.thumbnail_profile ?? "",
     title_refs: src.title_refs ?? "",
+    overrides: src.overrides ?? {},
     music: { ...DEFAULT_BRIEF.music, ...(src.music ?? {}) },
     captions: { ...DEFAULT_BRIEF.captions, ...(src.captions ?? {}) },
     extras: { ...DEFAULT_BRIEF.extras, ...(src.extras ?? {}) },
@@ -109,6 +121,41 @@ function Slider({
   );
 }
 
+/** Phase 3: what the Refine chat has changed on top of the style, read only. */
+function OverridesSummary({ overrides }: { overrides: NonNullable<Brief["overrides"]> }) {
+  const rows: [string, string][] = [];
+  for (const [section, values] of Object.entries(overrides)) {
+    if (values && typeof values === "object" && !Array.isArray(values)) {
+      for (const [k, v] of Object.entries(values)) rows.push([`${section}.${k}`, paramValue(v)]);
+    } else {
+      rows.push([section, paramValue(values)]);
+    }
+  }
+  if (rows.length === 0) return null;
+  return (
+    <div className="field group overrides" role="group" aria-labelledby="brief-overrides-h">
+      <span id="brief-overrides-h" className="field-label">
+        Refinements applied
+      </span>
+      <ul className="overrides-list">
+        {rows.map(([k, v]) => (
+          <li key={k} className="mono">
+            <span className="dim">{k}</span> = {v}
+          </li>
+        ))}
+      </ul>
+      <span className="field-help">These come from the Refine chat on the Preview step. Change or undo them there.</span>
+    </div>
+  );
+}
+
+function musicgenNote(health: Health | null): string | null {
+  const mg = health?.musicgen;
+  if (!mg) return null;
+  const by = mg.backend === "builtin" ? "Built-in synthesiser" : "External generator";
+  return `${by}. Licence: ${mg.licence}`;
+}
+
 export function BriefPanel({ ctx }: { ctx: ProjectContext }) {
   const { project, jobs, onJobStarted, setProject } = ctx;
 
@@ -120,6 +167,7 @@ export function BriefPanel({ ctx }: { ctx: ProjectContext }) {
   const [tracks, setTracks] = useState<Track[] | null>(null);
   const [profiles, setProfiles] = useState<ThumbnailProfile[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -136,6 +184,13 @@ export function BriefPanel({ ctx }: { ctx: ProjectContext }) {
       .catch((e) => {
         if (!cancelled) setListError(errorMessage(e));
       });
+    // Only the generated-music note needs this; a failure leaves the note out.
+    api
+      .health()
+      .then((h) => {
+        if (!cancelled) setHealth(h);
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
@@ -170,7 +225,9 @@ export function BriefPanel({ ctx }: { ctx: ProjectContext }) {
       return false;
     }
     try {
-      const next = normalise(await api.putBrief(project.id, candidate));
+      // Overrides belong to the Refine chat: send back the server's copy untouched.
+      const body: Brief = { ...candidate, overrides: project.brief.overrides ?? candidate.overrides ?? {} };
+      const next = normalise(await api.putBrief(project.id, body));
       setSaved(next);
       setBrief(next);
       setLenText(lengthText(next.target_s));
@@ -325,6 +382,8 @@ export function BriefPanel({ ctx }: { ctx: ProjectContext }) {
               <span>Hook required</span>
             </label>
           </fieldset>
+
+          <OverridesSummary overrides={project.brief.overrides ?? brief.overrides ?? {}} />
         </div>
 
         <div className="brief-col">
@@ -354,6 +413,7 @@ export function BriefPanel({ ctx }: { ctx: ProjectContext }) {
                   { value: "none", label: "None" },
                   { value: "library", label: "Library" },
                   { value: "track", label: "Track" },
+                  { value: "generate", label: "Generate" },
                 ]}
               />
               <Segmented<Energy>
@@ -374,10 +434,19 @@ export function BriefPanel({ ctx }: { ctx: ProjectContext }) {
                 type="text"
                 value={music.mood}
                 onChange={(e) => setMusic({ mood: e.target.value })}
-                placeholder="warm, driving, understated"
+                placeholder={music.mode === "generate" ? "lofi" : "warm, driving, understated"}
                 disabled={music.mode === "none"}
+                aria-describedby={music.mode === "generate" ? "brief-mood-help" : undefined}
               />
+              {music.mode === "generate" && (
+                <span id="brief-mood-help" className="field-help">
+                  e.g. lofi, cinematic, upbeat
+                </span>
+              )}
             </label>
+            {music.mode === "generate" && musicgenNote(health) && (
+              <p className="field-help musicgen-note">{musicgenNote(health)}</p>
+            )}
             {music.mode === "track" && (
               <div className="field">
                 <label className="field-label" htmlFor="brief-track">

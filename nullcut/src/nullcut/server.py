@@ -7,6 +7,8 @@ files the pipeline writes, so the server holds no state a restart could lose.
 from __future__ import annotations
 
 import os
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -14,8 +16,8 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import (__version__, config, llm, media, models, music, pipeline, plan, style_engine,
-               styles, thumbnails, timeline)
+from . import (__version__, config, learn, llm, media, models, music, musicgen, pipeline, plan,
+               refine, style_engine, styles, thumbnails, timeline)
 from .jobs import JobStore
 from .project import Project, natural_key, open_or_create, read_json
 
@@ -27,6 +29,9 @@ def create_app(home: Path | None = None) -> FastAPI:
     jobs = JobStore(home / "jobs.sqlite")
     app = FastAPI(title="nullcut", version=__version__)
     projects_dir = home / "projects"
+    stop = threading.Event()
+    learn.start_nightly(stop, log=lambda m: None)
+    app.router.on_shutdown.append(stop.set)
 
     # --- helpers -----------------------------------------------------------------
 
@@ -77,7 +82,20 @@ def create_app(home: Path | None = None) -> FastAPI:
     def render_view(p: Project, rec: dict) -> dict:
         return {"kind": rec["kind"], "format": rec.get("format", "16:9"),
                 "version": rec["version"], "url": media_url(p, rec["path"]),
-                "duration_s": rec["duration_s"], "qc": rec["qc"]}
+                "duration_s": rec["duration_s"], "qc": rec["qc"],
+                "qc_pending": rec.get("qc_pending", False),
+                "encoded": rec.get("encoded"), "cached": rec.get("cached"),
+                "audio_cached": rec.get("audio_cached")}
+
+    def step_view(step: dict) -> dict:
+        changes = [{**c, "label": refine._label(c)} for c in step.get("changes", [])]
+        return {"id": step["id"], "at": step["at"], "instruction": step["instruction"],
+                "kind": step["kind"], "by": step.get("by", "rules"),
+                "summary": step.get("summary", ""), "changes": changes,
+                "unmapped": step.get("unmapped", []), "labelled": step.get("labelled", 0),
+                "undone": step.get("undone", False), "undoes": step.get("undoes"),
+                "plan_version": step.get("plan_after"), "render": step.get("render"),
+                "timing": step.get("timing")}
 
     def renders(p: Project) -> list[dict]:
         recs = [read_json(f) for f in p.path("renders").glob("edit.v*.json")]
@@ -96,7 +114,11 @@ def create_app(home: Path | None = None) -> FastAPI:
                         "ok": llm.ping(ep)},
                 "vlm": {"url": vlm.url if vlm else None, "ok": llm.ping(vlm)},
                 "asr": asr if models.installed(asr) else f"{asr} (not pulled)",
-                "encoder": media.video_encoder()}
+                "encoder": media.video_encoder(),
+                "musicgen": {"backend": musicgen.backend(),
+                             "licence": musicgen.BUILTIN_LICENCE if musicgen.backend() == "builtin"
+                             else os.environ.get("NULLCUT_MUSICGEN_LICENCE",
+                                                 "external generator, licence not declared")}}
 
     @app.get("/api/styles")
     def list_styles() -> list[dict]:
@@ -283,6 +305,82 @@ def create_app(home: Path | None = None) -> FastAPI:
 
         return jobs.busy(p.id, "master") or jobs.submit(p.id, "master", run)
 
+    def _refine(p: Project, text: str) -> dict:
+        """Interpret and apply now (fast, and errors belong to this request); render as a
+        job that publishes the preview the moment it exists, then measures it."""
+        t0 = time.perf_counter()
+        try:
+            interp = refine.interpret(p, text, log=lambda m: None)
+            if interp["kind"] == "unclear":
+                return {"step": None, "message": interp["message"], "job": None}
+            t1 = time.perf_counter()
+            step = refine.apply(p, interp, text, log=lambda m: None)
+        except (refine.RefineError, llm.LLMError) as exc:
+            raise HTTPException(400, str(exc)) from exc
+        t2 = time.perf_counter()
+
+        def run(progress) -> dict:
+            t3 = time.perf_counter()
+            rec = pipeline.render_edit(p, "preview", lambda f, m: progress(0.85 * f, m),
+                                       measure_now=False)
+            t4 = time.perf_counter()
+            recs = [rec] + rec.get("others", [])
+            step["render"] = {"version": rec["version"],
+                              "items": sum(r["encoded"] + r["cached"] for r in recs),
+                              "encoded": sum(r["encoded"] for r in recs),
+                              "cached": sum(r["cached"] for r in recs),
+                              "audio_remixed": not all(r["audio_cached"] for r in recs)}
+            step["timing"] = {"interpret_s": round(t1 - t0, 2), "apply_s": round(t2 - t1, 2),
+                              "queued_s": round(t3 - t2, 2), "render_s": round(t4 - t3, 2),
+                              "to_preview_s": round(t4 - t0, 2)}
+            refine.update_step(p, step)
+            progress.publish({"step": step_view(step), "render": render_view(p, rec)})
+            progress(0.88, f"preview ready in {t4 - t0:.1f} s; measuring against the style")
+            measured = [pipeline.measure_record(p, r) for r in recs]
+            step["timing"]["qc_s"] = round(time.perf_counter() - t4, 2)
+            refine.update_step(p, step)
+            return {"step": step_view(step), "render": render_view(p, measured[0])}
+
+        job = jobs.submit(p.id, "refine", run)
+        return {"step": step_view(step), "message": None, "job": job}
+
+    @app.post("/api/projects/{pid}/refine")
+    def post_refine(pid: str, body: dict = Body(...)) -> dict:
+        p = project(pid)
+        _require_plan(p)
+        text = str(body.get("text", "")).strip()
+        if not text:
+            raise HTTPException(400, "say what to change")
+        if jobs.busy(p.id, "refine"):
+            raise HTTPException(409, "the previous refinement is still rendering")
+        return _refine(p, text)
+
+    @app.post("/api/projects/{pid}/undo")
+    def post_undo(pid: str) -> dict:
+        p = project(pid)
+        _require_plan(p)
+        if jobs.busy(p.id, "refine"):
+            raise HTTPException(409, "the previous refinement is still rendering")
+        return _refine(p, "undo")
+
+    @app.get("/api/projects/{pid}/refinements")
+    def get_refinements(pid: str) -> list[dict]:
+        return [step_view(s) for s in refine.history(project(pid))]
+
+    @app.get("/api/learning")
+    def get_learning() -> dict:
+        return learn.status()
+
+    @app.post("/api/learning/refit")
+    def post_refit() -> dict:
+        return learn.refit()
+
+    @app.delete("/api/learning")
+    def delete_learning() -> dict:
+        for path in (learn.examples_path(), learn.model_path()):
+            path.unlink(missing_ok=True)
+        return learn.status()
+
     def _require_plan(p: Project) -> None:
         doc = plan.latest_plan(p, with_beats=True)
         if doc is None:
@@ -365,8 +463,10 @@ def create_app(home: Path | None = None) -> FastAPI:
                 "files": {"srt": media_url(p, files["srt"]), "vtt": media_url(p, files["vtt"]),
                           "otio": media_url(p, files["otio"]),
                           "fcpxml": media_url(p, files.get("fcpxml")),
+                          "cube": media_url(p, files.get("cube")),
                           "mp4": media_url(p, files["mp4"]),
-                          "mp4_vertical": media_url(p, files.get("mp4_vertical"))}}
+                          "mp4_vertical": media_url(p, files.get("mp4_vertical"))},
+                "export_checks": pkg.get("export_checks")}
 
     @app.get("/api/projects/{pid}/package")
     def get_package(pid: str) -> dict:

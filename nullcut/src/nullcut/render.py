@@ -25,12 +25,19 @@ from .project import Project, read_json, stable_hash, write_json
 
 # Bump when render output changes for identical inputs; old cache entries
 # simply stop matching.
-RENDER_VERSION = 2
+RENDER_VERSION = 3
 
 Log = Callable[[str], None]
 
 
+NTSC = (Fraction(24000, 1001), Fraction(30000, 1001), Fraction(60000, 1001))
+
+
 def fps_fraction(fps: float) -> Fraction:
+    # "29.97" written by a person or a probe means 30000/1001, never 2997/100.
+    for rate in NTSC:
+        if abs(fps - float(rate)) < 0.005:
+            return rate
     return Fraction(fps).limit_denominator(1001)
 
 
@@ -56,7 +63,7 @@ def _smooth(u: str) -> str:
     return f"(st(9,{u})*ld(9)*(3-2*ld(9)))"
 
 
-def zoom_filter(zooms: list[dict], fps: float) -> str:
+def zoom_filter(zooms: list[dict], fps: float, interpolation: str = "cubic") -> str:
     """Sub-pixel crop-and-scale through `perspective` (plan §7: not zoompan, which steps on
     whole pixels and jitters on slow moves).
 
@@ -89,7 +96,12 @@ def zoom_filter(zooms: list[dict], fps: float) -> str:
     # Each corner expression recomputes the registers; the sum's value is
     # discarded by multiplying by zero.
     args = ":".join(f"{k}='0*({pre})+{v}'" for k, v in corner.items())
-    return f"perspective={args}:sense=source:interpolation=cubic:eval=frame"
+    # Outside every zoom the envelope is zero and the frame passes untouched: the filter
+    # is switched off there instead of remapping identical pixels.
+    windows = "+".join(f"between(t,{z['start'] - 1 / fps:.4f},{z['end'] + 1 / fps:.4f})"
+                       for z in zooms)
+    return (f"perspective={args}:sense=source:interpolation={interpolation}:eval=frame"
+            f":enable='gt({windows},0)'")
 
 
 def track_expr(track: list[list[float]], fps: float) -> str:
@@ -107,7 +119,7 @@ def track_expr(track: list[list[float]], fps: float) -> str:
 def render_item(src: Path, item: Item, out: Path, ass: Path | None, size: tuple[int, int],
                 quality: str, fps: float, zooms: list[dict] | None = None,
                 brolls: list[dict] | None = None, lut: Path | None = None,
-                reframe: list[list[float]] | None = None) -> None:
+                reframe: list[list[float]] | None = None, grade: dict | None = None) -> None:
     w, h = size
     rate = fps_fraction(fps)
     if reframe:
@@ -128,7 +140,7 @@ def render_item(src: Path, item: Item, out: Path, ass: Path | None, size: tuple[
         "tpad=stop_mode=clone:stop_duration=1",
     ]
     if zooms:
-        base.append(zoom_filter(zooms, fps))
+        base.append(zoom_filter(zooms, fps, "cubic" if quality == "master" else "linear"))
     graph = [f"[0:v]{','.join(base)}[v0]"]
     inputs = ["-ss", f"{item.src_in:.6f}", "-i", str(src)]
     last = "v0"
@@ -144,6 +156,9 @@ def render_item(src: Path, item: Item, out: Path, ass: Path | None, size: tuple[
     tail = []
     if lut is not None:
         tail.append(f"lut3d=file='{_filter_path(lut)}':interp=tetrahedral")
+    elif grade:
+        from . import fx
+        tail.append(fx.preview_grade_filter(grade))
     if ass is not None:
         tail.append(f"ass=filename='{_filter_path(ass)}'")
     tail.append("format=yuv420p")
@@ -323,13 +338,17 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
     style = cap.get("style", "clean")
     words = captions.output_words(items, fps, meta.get("emphasis"))
     events = captions.build_events(words, style, cap) if cap.get("enabled") else []
-    lut = None
+    lut, grade = None, None
     if meta.get("colour"):
         from . import fx
         if not fx.is_identity(meta["colour"]):
-            lut = fx.write_cube(project.path("renders", "cache",
-                                             f"lut_{stable_hash(meta['colour'])}.cube"),
-                                meta["colour"])
+            if quality == "master":
+                lut = fx.write_cube(project.path("renders", "cache",
+                                                 f"lut_{stable_hash(meta['colour'])}.cube"),
+                                    meta["colour"])
+            else:
+                grade = {k: meta["colour"][k] for k in ("saturation", "contrast", "warmth",
+                                                         "lift") if k in meta["colour"]}
 
     cache = project.path("renders", "cache")
     jobs_todo: list[tuple] = []
@@ -343,10 +362,13 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
         ass_text = None
         if events:
             ass_text = captions.ass_document(captions.slice_events(events, t0, t1),
-                                             size[0], size[1], style)
+                                             size[0], size[1], style, cap.get("scale", 1.0))
         clip = clips[it.clip_id]
         src = Path(clip["path"]) if quality == "master" else project.path(clip["proxy"])
-        zooms = [{**z, "start": z["start_s"] - t0, "end": z["end_s"] - t0}
+        # Only what changes pixels: a zoom's rule text or anchor must not void the cache.
+        zooms = [{"start": round(z["start_s"] - t0, 4), "end": round(z["end_s"] - t0, 4),
+                  "scale": z["scale"], "cx": z["cx"], "cy": z["cy"], "ease_s": z["ease_s"],
+                  "kind": z["kind"]}
                  for z in meta.get("zooms", []) if z["start_s"] < t1 and z["end_s"] > t0]
         brolls = []
         for br in meta.get("broll", []):
@@ -362,7 +384,7 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
                            "enc": enc, "ass": ass_text, "zooms": zooms,
                            "broll": [{k: v for k, v in b.items() if k != "src"} for b in brolls]
                            + [b["src"] for b in brolls], "lut": str(lut) if lut else None,
-                           "reframe": track})
+                           "grade": grade, "reframe": track})
         out = cache / f"seg_{key}.mp4"
         seg_paths.append(out)
         if not out.exists():
@@ -382,7 +404,7 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
     workers = jobs or int(os.environ.get("NULLCUT_RENDER_JOBS", min(4, os.cpu_count() or 1)))
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = [pool.submit(render_item, src, it, out, ass, size, quality, fps, zooms,
-                               brolls, lut, track)
+                               brolls, lut, track, grade)
                    for src, it, out, ass, zooms, brolls, track in jobs_todo]
         for n, f in enumerate(futures, 1):
             f.result()
@@ -409,7 +431,8 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
     mix_m4a = cache / f"mix_{audio_key}.m4a"
     qc_path = cache / f"mix_{audio_key}.cuts.json"
     progress(0.88, "mixing audio")
-    if not mix_m4a.exists() or not qc_path.exists():
+    audio_cached = mix_m4a.exists() and qc_path.exists()
+    if not audio_cached:
         log("mix audio and normalise to "
             f"{config.LOUDNESS_TARGET_LUFS:g} LUFS / {config.TRUE_PEAK_DBTP:g} dBTP")
         dialogue = assemble_audio(project, items, clips, fps)
@@ -437,6 +460,7 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
     return {
         "output": str(final), "srt": str(srt_path), "vtt": str(vtt_path),
         "encoded": len(jobs_todo), "cached": len(items) - len(jobs_todo),
+        "audio_cached": audio_cached,
         "expected_s": round(sum(it.frames for it in items) / fps, 3),
         "video_s": round(media.stream_duration(final, "v"), 3),
         "audio_s": round(media.stream_duration(final, "a"), 3),

@@ -22,6 +22,8 @@ export interface ProjectContext {
   setProject: (fn: (p: ProjectDetail) => ProjectDetail) => void;
   onJobStarted: (job: Job) => void;
   reload: () => Promise<void>;
+  /** Refetch renders now, e.g. when a refinement's preview becomes playable before its job ends. */
+  refreshRenders: () => Promise<void>;
 }
 
 export function ProjectPage({ id, step }: { id: string; step: Step }) {
@@ -125,6 +127,14 @@ export function ProjectPage({ id, step }: { id: string; step: Step }) {
     };
   }, [id, planVersion]);
 
+  const refreshRenders = useCallback(async () => {
+    try {
+      setRenders(await api.getRenders(id));
+    } catch (e) {
+      setSideError(`Renders: ${errorMessage(e)}`);
+    }
+  }, [id]);
+
   const onJobStarted = useCallback((job: Job) => {
     setWatched((prev) => ({ ...prev, [job.id]: job }));
   }, []);
@@ -159,7 +169,7 @@ export function ProjectPage({ id, step }: { id: string; step: Step }) {
     clips: { available: true, busy: busy("ingest") },
     brief: { available: true },
     storyboard: { available: hasPlan, reason: "needs a plan", busy: busy("plan") },
-    preview: { available: hasPreview, reason: "needs a render", busy: busy("preview") },
+    preview: { available: hasPreview, reason: "needs a render", busy: busy("preview") || busy("refine") },
     deliver: { available: hasPlan, reason: "needs a plan", busy: busy("master") },
   };
 
@@ -172,6 +182,7 @@ export function ProjectPage({ id, step }: { id: string; step: Step }) {
     setProject,
     onJobStarted,
     reload,
+    refreshRenders,
   };
 
   return (

@@ -7,12 +7,12 @@ re-runs plan onwards, analysis never re-runs for a clip it has seen.
 
 from __future__ import annotations
 
-import shutil
+import time
 from pathlib import Path
 from typing import Callable
 
-from . import (analyse, captions, composer, fx, measure, music, package, plan, qc, render,
-               style_engine, styles, thumbnails, timeline)
+from . import (analyse, captions, composer, export, fx, measure, music, package, plan, qc,
+               refine, render, style_engine, styles, thumbnails, timeline)
 from .compiler import pick_fps
 from .project import Project, read_json, stable_hash, write_json
 
@@ -44,8 +44,11 @@ def compile_timeline(project: Project, log: Log = _noop) -> tuple[int, Path, dic
     brief = plan.load_brief(project)
     fps = pick_fps(index)
     library = music.load_library()
-    comp = composer.compose(index, doc, brief, fps, library)
-    style = styles.apply_extras(styles.get(doc["style"]), brief["extras"])
+    # The previous timeline's decisions are kept where they still fit (composer docstring).
+    latest = project.latest("timelines", "timeline", ".otio")
+    prior = timeline.load(latest[1])[0] if latest else None
+    comp = composer.compose(index, doc, brief, fps, library, prior)
+    style = styles.for_brief(doc["style"], brief)
     source_colour = fx.footage_colour(project, index)
     colour_capped = False
     if "target" in comp.colour:
@@ -54,6 +57,7 @@ def compile_timeline(project: Project, log: Log = _noop) -> tuple[int, Path, dic
         comp.colour = fx.colour_transfer(target, source_colour) if source_colour else {}
         reach = style_engine.expected_colour(comp.colour, source_colour) if comp.colour else None
         colour_capped = bool(reach) and abs(reach["warmth"] - target["warmth"]) > 0.05
+    comp.colour = fx.nudge(comp.colour, brief.get("overrides", {}).get("colour_nudge"))
     meta = {
         "name": f"{project.manifest()['name']} edit", "stem": "edit", "fps": fps,
         "plan_version": doc["version"], "style": doc["style"], "captions": comp.captions,
@@ -74,16 +78,49 @@ def compile_timeline(project: Project, log: Log = _noop) -> tuple[int, Path, dic
     return version, path, meta
 
 
-def _render_record(project: Project, kind: str, version: int, result: dict, meta: dict,
-                   items, fps: float, fmt: str = "16:9") -> dict:
-    style = styles.apply_extras(styles.get(meta["style"]), plan.load_brief(project)["extras"])
+def _record_path(project: Project, kind: str, version: int, fmt: str) -> Path:
+    suffix = ".vertical" if fmt == "9:16" else ""
+    return project.path("renders", f"edit.v{version}.{kind}{suffix}.json")
+
+
+def _base_record(project: Project, kind: str, version: int, result: dict, meta: dict,
+                 fmt: str) -> dict:
+    """What a render can say the moment it exists: files, Gate 1, cache use. The style
+    measurement follows (measure_record), so a refinement's preview plays first."""
+    gate = qc.gate1(result, meta.get("target_s"), meta.get("tolerance", 0.05))
+    record = {"kind": kind, "format": fmt, "version": version,
+              "path": str(Path(result["output"]).relative_to(project.root)),
+              "duration_s": result["video_s"], "audio_s": result["audio_s"],
+              "encoded": result["encoded"], "cached": result["cached"],
+              "audio_cached": result.get("audio_cached", False),
+              "srt": str(Path(result["srt"]).relative_to(project.root)),
+              "vtt": str(Path(result["vtt"]).relative_to(project.root)),
+              "qc": {**gate, "style_match": {}, "style_detail": {}, "style_overall": None},
+              "qc_pending": True, "measured": None}
+    write_json(_record_path(project, kind, version, fmt), record)
+    return record
+
+
+def measure_record(project: Project, record: dict) -> dict:
+    """Plan §5: the same measurements that build a profile run on the output."""
+    path = project.path("timelines", f"timeline.v{record['version']}.otio")
+    meta, items = timeline.load(path)
+    detail, measured = _style_detail(project, record, meta, items, meta["fps"])
+    record = {**record, "qc": {**record["qc"], "style_match": {k: d["score"]
+                                                               for k, d in detail.items()},
+                               "style_detail": detail,
+                               "style_overall": style_engine.overall(detail)},
+              "measured": measured, "qc_pending": False}
+    write_json(_record_path(project, record["kind"], record["version"], record["format"]),
+               record)
+    return record
+
+
+def _style_detail(project: Project, record: dict, meta: dict, items, fps: float):
+    style = styles.for_brief(meta["style"], plan.load_brief(project))
     words = captions.output_words(items, fps, meta.get("emphasis"))
     cap = meta["captions"]
-    blocks = qc.caption_block_sizes(words, cap["style"], cap["max_words"]) if cap["enabled"] \
-        else None
-    gate = qc.gate1(result, meta.get("target_s"), meta.get("tolerance", 0.05))
-    match = qc.style_match(meta["report"], style, blocks, cap["enabled"],
-                           bool(meta.get("music")), meta.get("music_wanted", False))
+    result = {"output": str(project.path(record["path"]))}
     # Plan §5: the same measurements that build a profile run on the output.
     measured = measure.measure(Path(result["output"]), words=words)
     # Colour is judged against the grade this footage received: an extracted look is
@@ -95,19 +132,7 @@ def _render_record(project: Project, kind: str, version: int, result: dict, meta
     if meta.get("colour_capped") and "colour" in detail:
         detail["colour"]["note"] = (detail["colour"]["note"] or "") + \
             " (the reference look is out of reach for this footage; the grade was capped)"
-    match = {k: d["score"] for k, d in detail.items()}
-    rel = Path(result["output"]).relative_to(project.root)
-    record = {"kind": kind, "format": fmt, "version": version, "path": str(rel),
-              "duration_s": result["video_s"],
-              "audio_s": result["audio_s"], "encoded": result["encoded"],
-              "cached": result["cached"], "srt": str(Path(result["srt"]).relative_to(project.root)),
-              "vtt": str(Path(result["vtt"]).relative_to(project.root)),
-              "qc": {**gate, "style_match": match, "style_detail": detail,
-                     "style_overall": style_engine.overall(detail)},
-              "measured": measured}
-    suffix = ".vertical" if fmt == "9:16" else ""
-    write_json(project.path("renders", f"edit.v{version}.{kind}{suffix}.json"), record)
-    return record
+    return detail, measured
 
 
 def formats(brief: dict) -> list[str]:
@@ -115,24 +140,64 @@ def formats(brief: dict) -> list[str]:
 
 
 def render_edit(project: Project, quality: str, progress: Progress = _noop,
-                log: Log = _noop) -> dict:
+                log: Log = _noop, measure_now: bool = True) -> dict:
     """Render every format the brief asks for; returns the first format's record with the
-    others under `others`."""
+    others under `others`. With measure_now=False the style measurement is left to
+    measure_record, so the caller can show the preview first."""
     progress(0.02, "compiling timeline")
     version, path, _ = compile_timeline(project, log)
-    meta, items = timeline.load(path)
     fmts = formats(plan.load_brief(project))
+    span = 0.9 if measure_now else 0.95
     records = []
     for n, fmt in enumerate(fmts):
-        lo, hi = 0.05 + 0.9 * n / len(fmts), 0.05 + 0.9 * (n + 1) / len(fmts)
+        lo, hi = 0.05 + span * n / len(fmts), 0.05 + span * (n + 1) / len(fmts)
         result = render.render(project, path, quality, log=log, fmt=fmt,
                                progress=lambda f, m, lo=lo, hi=hi, fmt=fmt:
-                               progress(lo + (hi - lo) * 0.85 * f, f"{fmt}: {m}"))
-        progress(lo + (hi - lo) * 0.9, f"{fmt}: measuring against the style")
-        records.append(_render_record(project, quality, version, result, meta, items,
-                                      meta["fps"], fmt))
+                               progress(lo + (hi - lo) * (0.85 if measure_now else 1.0) * f,
+                                        f"{fmt}: {m}"))
+        rec = _base_record(project, quality, version, result, timeline.load(path)[0], fmt)
+        if measure_now:
+            progress(lo + (hi - lo) * 0.9, f"{fmt}: measuring against the style")
+            rec = measure_record(project, rec)
+        records.append(rec)
     progress(1.0, f"{quality} ready")
     return {**records[0], "others": records[1:]}
+
+
+def refine_edit(project: Project, instruction: str, progress: Progress = _noop,
+                log: Log = _noop, use_llm: bool = True,
+                on_preview: Callable[[dict], None] | None = None) -> dict:
+    """Plan §2 step 6: one chat instruction to an updated preview, timed. Returns the
+    refinement step; the preview is published through on_preview before QC runs."""
+    t0 = time.perf_counter()
+    progress(0.02, "reading the instruction")
+    interp = refine.interpret(project, instruction, use_llm=use_llm, log=log)
+    if interp["kind"] == "unclear":
+        return {"step": None, "interpretation": interp}
+    t1 = time.perf_counter()
+    progress(0.08, f"{interp['kind']}: {interp.get('summary', '')}"[:200])
+    step = refine.apply(project, interp, instruction, log)
+    t2 = time.perf_counter()
+    record = render_edit(project, "preview", lambda f, m: progress(0.1 + 0.75 * f, m), log,
+                         measure_now=False)
+    t3 = time.perf_counter()
+    recs = [record] + record.get("others", [])
+    step["render"] = {"version": record["version"],
+                      "items": sum(r["encoded"] + r["cached"] for r in recs),
+                      "encoded": sum(r["encoded"] for r in recs),
+                      "cached": sum(r["cached"] for r in recs),
+                      "audio_remixed": not all(r["audio_cached"] for r in recs)}
+    step["timing"] = {"interpret_s": round(t1 - t0, 2), "apply_s": round(t2 - t1, 2),
+                      "render_s": round(t3 - t2, 2), "to_preview_s": round(t3 - t0, 2)}
+    refine.update_step(project, step)
+    if on_preview:
+        on_preview({"step": step, "render": record})
+    progress(0.88, f"preview ready in {t3 - t0:.1f} s; measuring against the style")
+    measured = [measure_record(project, r) for r in recs]
+    step["timing"]["qc_s"] = round(time.perf_counter() - t3, 2)
+    refine.update_step(project, step)
+    progress(1.0, "refined")
+    return {"step": step, "render": {**measured[0], "others": measured[1:]}}
 
 
 def _truncate(comp, seconds: float, fps: float):
@@ -174,7 +239,8 @@ def try_styles(project: Project, style_ids: list[str], seconds: float = 60.0,
     if not 2 <= len(style_ids) <= 4:
         raise ValueError("try two to four styles")
     index = project.clip_index()
-    brief = plan.load_brief(project)
+    # Trials compare styles as shipped (plus sliders), never this edit's refinements.
+    brief = {**plan.load_brief(project), "overrides": {}}
     fps = pick_fps(index)
     library = music.load_library()
     source_colour = fx.footage_colour(project, index)
@@ -185,7 +251,7 @@ def try_styles(project: Project, style_ids: list[str], seconds: float = 60.0,
         lo, hi = n / len(style_ids), (n + 1) / len(style_ids)
         progress(lo, f"{sid}: planning")
         doc = plan.trial_plan(project, sid, log=lambda m: None)
-        style = styles.apply_extras(styles.get(sid), brief["extras"])
+        style = styles.for_brief(sid, brief)
         comp = _truncate(composer.compose(index, doc, {**brief, "style": sid}, fps, library),
                          seconds, fps)
         if "target" in comp.colour:
@@ -238,7 +304,6 @@ def master(project: Project, progress: Progress = _noop, log: Log = _noop) -> di
     pkg = package.build(plan.load_brief(project), beats, words, pool,
                         record["duration_s"], meta.get("music"), language)
     out = project.path("package")
-    shutil.copyfile(path, out / f"edit.v{version}.otio")
     landscape = record if record["format"] == "16:9" else None
     vertical = next((r for r in [record] + record.get("others", []) if r["format"] == "9:16"),
                     None)
@@ -249,11 +314,13 @@ def master(project: Project, progress: Progress = _noop, log: Log = _noop) -> di
         pkg["titles"][0]["text"] if pkg["titles"] else (beats[0]["title"] if beats else ""),
         beats, pool, plan.load_brief(project).get("thumbnail_profile"), log,
         timeline_path=path)
+    progress(0.97, "exports for Resolve and Premiere")
+    exported = export.write_all(project, path, out, version,
+                                srt=project.path(record["srt"]))
     pkg["files"] = {"mp4": (landscape or record)["path"],
                     "mp4_vertical": vertical["path"] if vertical else None,
-                    "srt": record["srt"], "vtt": record["vtt"],
-                    "otio": f"package/edit.v{version}.otio",
-                    "fcpxml": _fcpxml(path, out / f"edit.v{version}.fcpxml", project)}
+                    "srt": record["srt"], "vtt": record["vtt"], **exported["files"]}
+    pkg["export_checks"] = exported["checks"]
     pkg["version"] = version
     write_json(out / "package.json", pkg)
     (out / "description.md").write_text(pkg["description"] + "\n")
@@ -261,14 +328,3 @@ def master(project: Project, progress: Progress = _noop, log: Log = _noop) -> di
     progress(1.0, "master and package ready")
     return {"render": record, "package": pkg}
 
-
-def _fcpxml(otio_path: Path, out: Path, project: Project) -> str | None:
-    """FCPXML for Final Cut and Resolve, when the OTIO adapter plugin is installed."""
-    try:
-        import opentimelineio as otio
-
-        tl = otio.adapters.read_from_file(str(otio_path))
-        otio.adapters.write_to_file(tl, str(out), adapter_name="fcpx_xml")
-        return str(out.relative_to(project.root))
-    except Exception:  # adapter missing or the timeline holds something it cannot express
-        return None

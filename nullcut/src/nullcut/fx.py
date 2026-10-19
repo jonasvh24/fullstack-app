@@ -73,6 +73,43 @@ def write_cube(path: Path, colour: dict, size: int = 33) -> Path:
     return path
 
 
+def affine(colour: dict) -> tuple[np.ndarray, np.ndarray]:
+    """grade() is affine in RGB before its final clip: out = clip(M @ rgb + b)."""
+    sat = float(colour.get("saturation", 1.0))
+    con = float(colour.get("contrast", 1.0))
+    warm = float(colour.get("warmth", 0.0))
+    lift = float(colour.get("lift", 0.0))
+    w = np.array([0.2126, 0.7152, 0.0722])
+    a1 = sat * np.eye(3) + (1 - sat) * np.tile(w, (3, 1))
+    m = (1 - lift) * con * a1
+    b = (1 - lift) * (0.5 * (1 - con) + np.array([warm, warm * 0.3, -warm])) + lift
+    return m, b
+
+
+def preview_grade_filter(colour: dict) -> str:
+    """The grade as a channel mixer and a per-channel offset: about 2.5x cheaper than a
+    tetrahedral 3D LUT. Identical except where the mixer already clips, where it differs
+    by at most the offset. Previews only; masters keep the LUT."""
+    m, b = affine(colour)
+    mix = ":".join(f"{ch}{src}={m[i, j]:.5f}" for i, ch in enumerate("rgb")
+                   for j, src in enumerate("rgb"))
+    off = ":".join(f"{ch}='clip(val+{b[i] * 255:.3f},0,255)'" for i, ch in enumerate("rgb"))
+    return f"format=rgb24,colorchannelmixer={mix},lutrgb={off}"
+
+
+def nudge(colour: dict, change: dict | None) -> dict:
+    """A refinement's colour tweak on top of the fitted grade: ratios for saturation and
+    contrast, offsets for warmth and lift, so "warmer" means the same on any look."""
+    if not change:
+        return colour
+    base = {"saturation": 1.0, "contrast": 1.0, "warmth": 0.0, "lift": 0.0,
+            **{k: v for k, v in (colour or {}).items() if k != "target"}}
+    return {"saturation": round(base["saturation"] * change.get("saturation", 1.0), 4),
+            "contrast": round(base["contrast"] * change.get("contrast", 1.0), 4),
+            "warmth": round(base["warmth"] + change.get("warmth", 0.0), 4),
+            "lift": round(base["lift"] + change.get("lift", 0.0), 4)}
+
+
 def is_identity(colour: dict) -> bool:
     return (abs(colour.get("saturation", 1) - 1) < 1e-3
             and abs(colour.get("contrast", 1) - 1) < 1e-3

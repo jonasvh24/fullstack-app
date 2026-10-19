@@ -34,7 +34,7 @@ class Solution:
 
 def solve(beats: list[BeatIn], seg_len: dict[str, float], scores: dict[str, float],
           target_s: float | None, tolerance: float = 0.05, hook_max_s: float | None = None,
-          time_limit_s: float = 5.0) -> Solution:
+          time_limit_s: float = 5.0, must_keep: set[str] | frozenset = frozenset()) -> Solution:
     from ortools.sat.python import cp_model
 
     segs = [(b, s) for b in beats for s in b.segment_ids if s in seg_len]
@@ -57,6 +57,9 @@ def solve(beats: list[BeatIn], seg_len: dict[str, float], scores: dict[str, floa
                     m.Add(x[s] == 1)
             elif min_one:
                 m.Add(sum(x[s] for s in ids) >= 1)
+            for s in ids:
+                if s in must_keep:  # restored by the creator: never the solver's to drop
+                    m.Add(x[s] == 1)
             if b.role == "hook" and hook_max_s and not b.locked:
                 m.Add(length <= round(hook_max_s * 1000))
             if b.target_s:

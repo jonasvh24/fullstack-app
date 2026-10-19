@@ -20,8 +20,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 LANES = {"ingest": "analyse", "music_import": "analyse", "style_extract": "analyse",
-         "thumb_extract": "analyse", "plan": "llm",
-         "preview": "encode", "master": "encode", "try": "encode"}
+         "thumb_extract": "analyse", "plan": "llm", "refit": "llm",
+         "preview": "encode", "master": "encode", "try": "encode", "refine": "encode"}
 
 
 def _now() -> str:
@@ -83,6 +83,10 @@ class JobStore:
         def progress(frac: float, message: str) -> None:
             self.update(job_id, progress=round(max(0.0, min(1.0, frac)), 3),
                         message=message[:200])
+
+        # A job may hand over a partial result while it runs (a refinement's preview
+        # plays while its style is still being measured).
+        progress.publish = lambda result: self.update(job_id, result=result)  # type: ignore
 
         def run() -> None:
             self.update(job_id, status="running", message="starting")
