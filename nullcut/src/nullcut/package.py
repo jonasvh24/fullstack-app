@@ -60,6 +60,35 @@ def verify(title: str, transcript: str) -> bool:
     return hits / len(terms) >= 0.6
 
 
+def title_pattern(refs: str) -> dict | None:
+    """Plan §10 step 1: what the creator's own titles have in common."""
+    titles = [t.strip() for t in (refs or "").splitlines() if t.strip()]
+    if len(titles) < 3:
+        return None
+    words = [re.findall(r"[\w']+", t) for t in titles]
+    def caps(t: str) -> str:
+        letters = [c for c in t if c.isalpha()]
+        if letters and sum(c.isupper() for c in letters) / len(letters) > 0.8:
+            return "upper"
+        ws = [w for w in re.findall(r"[A-Za-z']+", t) if len(w) > 3]
+        return "title" if ws and sum(w[0].isupper() for w in ws) / len(ws) > 0.7 else "sentence"
+    styles_ = [caps(t) for t in titles]
+    return {"count": len(titles),
+            "chars": round(sum(len(t) for t in titles) / len(titles)),
+            "words": round(sum(len(w) for w in words) / len(words), 1),
+            "numbers": round(sum(bool(re.search(r"\d", t)) for t in titles) / len(titles), 2),
+            "questions": round(sum(t.endswith("?") for t in titles) / len(titles), 2),
+            "caps": max(set(styles_), key=styles_.count)}
+
+
+def apply_caps(text: str, caps: str) -> str:
+    if caps == "upper":
+        return text.upper()
+    if caps == "title":
+        return " ".join(w if w.isupper() else w[:1].upper() + w[1:] for w in text.split())
+    return text[:1].upper() + text[1:]
+
+
 def _heuristic_titles(beats: list[dict], sentences: dict[str, dict]) -> list[dict]:
     """Lines from the finished edit only, and only ones that say something."""
     out = []
@@ -94,12 +123,19 @@ TITLE_SCHEMA = {
 def _llm_titles(ep: llm.Endpoint, brief: dict, beats: list[dict], transcript: str,
                 language: str) -> tuple[list[dict], str]:
     outline = "\n".join(f"- {b['role']}: {b['title']} ({b.get('intent', '')})" for b in beats)
+    pattern = title_pattern(brief.get("title_refs", ""))
+    refs = ""
+    if pattern:
+        refs = (f"\n\nThe creator's own titles, to match in pattern (not in content):\n"
+                f"{brief['title_refs'].strip()}\nMeasured pattern: about {pattern['chars']} "
+                f"characters, numbers in {pattern['numbers']:.0%}, questions in "
+                f"{pattern['questions']:.0%}, {pattern['caps']} case.")
     prompt = (f"Write ten YouTube titles for this finished video, best first, in "
               f"{'Dutch' if language == 'nl' else 'English'}. Under {TITLE_MAX} characters, "
               f"hook in the first half, no clickbait the video does not pay off, no emojis. "
               f"Give a one-line rationale each. Also a two-sentence summary for the "
               f"description.\n\nBrief: {brief.get('text') or '(none)'}\n\nOutline:\n{outline}"
-              f"\n\nTranscript of the edit:\n{transcript[:12000]}")
+              f"{refs}\n\nTranscript of the edit:\n{transcript[:12000]}")
     reply = llm.chat(ep, [{"role": "user", "content": prompt}], schema=TITLE_SCHEMA,
                      schema_name="titles", max_tokens=1500, temperature=0.7)
     raw = llm.parse_json(reply.get("content"))
@@ -121,6 +157,13 @@ def build(brief: dict, beats: list[dict], words: list[dict], sentences: dict[str
             titles = []
     if not titles:
         titles = _heuristic_titles(beats, sentences)
+        pattern = title_pattern(brief.get("title_refs", ""))
+        if pattern:
+            # Offline titles cannot invent a pattern, but they can wear its case and be
+            # ranked by how close they sit to its length.
+            for t in titles:
+                t["text"] = apply_caps(t["text"], pattern["caps"])
+            titles.sort(key=lambda t: abs(len(t["text"]) - pattern["chars"]))
     checked = []
     for t in titles:
         ok = len(t["text"]) <= TITLE_MAX and verify(t["text"], transcript)

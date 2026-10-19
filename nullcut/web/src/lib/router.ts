@@ -26,12 +26,14 @@ export function href(path: string): string {
 
 export type Route =
   | { name: "projects" }
+  | { name: "styles" }
   | { name: "project"; id: string; step: string | null }
   | { name: "notFound"; path: string };
 
 export function matchRoute(path: string): Route {
   const parts = path.split("/").filter(Boolean).map(decodeURIComponent);
   if (parts.length === 0) return { name: "projects" };
+  if (parts[0] === "styles" && parts.length === 1) return { name: "styles" };
   if (parts[0] === "p" && parts[1] && parts.length <= 3) {
     return { name: "project", id: parts[1], step: parts[2] ?? null };
   }

@@ -9,6 +9,7 @@ import { href, navigate } from "../lib/router";
 import type { ProjectContext } from "../pages/ProjectPage";
 import { BeatCard, type DropPos, type LocalBeat } from "./BeatCard";
 import { QuestionsPanel } from "./QuestionsPanel";
+import { TryStyles } from "./TryStyles";
 
 function toLocal(plan: Plan): LocalBeat[] {
   return plan.beats.map((b) => ({ ...b, removed: [], edited: false }));
@@ -216,6 +217,8 @@ export function StoryboardPanel({ ctx }: { ctx: ProjectContext }) {
       {planJob && (isActive(planJob) || planJob.status === "failed") && <JobProgress job={planJob} />}
 
       <SolverStrip plan={plan} tolerance={project.brief?.tolerance ?? 0.05} stale={dirty} />
+
+      <TryStyles ctx={ctx} />
 
       {plan.summary && <p className="plan-summary">{plan.summary}</p>}
 

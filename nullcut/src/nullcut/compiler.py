@@ -74,6 +74,11 @@ def filler_mask(words: list[dict], segments: list[dict], lang: str) -> list[str 
     return reasons
 
 
+def min_cut_gap_s() -> float:
+    """Shortest pause worth cutting: both handles plus 50 ms of real removal."""
+    return config.HANDLE_PRE_S + config.HANDLE_POST_S + 0.05
+
+
 def clip_spans(clip: dict, silence_s: float, remove_fillers: bool) -> tuple[list[Item], dict]:
     """Split each segment's kept words into spans at long gaps and removed fillers."""
     words, segments = clip["words"], clip["segments"]
@@ -87,7 +92,7 @@ def clip_spans(clip: dict, silence_s: float, remove_fillers: bool) -> tuple[list
             stats["filler_s"] += w["e"] - w["s"]
 
     # A cut needs real material to remove, or it is just a visible jump.
-    min_cut_gap = max(silence_s, pre + post + 0.05)
+    min_cut_gap = max(silence_s, min_cut_gap_s())
     raw: list[tuple[str, list[int], list[str]]] = []  # (segment, word indices, fillers)
     for seg in segments:
         current: list[int] = []
@@ -123,9 +128,17 @@ def clip_spans(clip: dict, silence_s: float, remove_fillers: bool) -> tuple[list
         first, last = words[idx[0]], words[idx[-1]]
         # Handles must not reach into a removed filler or the neighbouring span.
         prev_word_end = words[raw[n - 1][1][-1]]["e"] if n > 0 else 0.0
-        start = max(first["s"] - pre, prev_word_end, removed_end_before[idx[0]], 0.0)
         next_word_start = words[raw[n + 1][1][0]]["s"] if n + 1 < len(raw) else clip["duration"]
-        end = min(last["e"] + post, next_word_start, removed_start_after[idx[-1] + 1],
+        # A pause the style keeps stays whole, between sentences as within them: the
+        # spans reach across it and meet, so it plays as one continuous take.
+        keep_before = n > 0 and first["s"] - prev_word_end <= min_cut_gap \
+            and raw[n - 1][0] != seg_id
+        keep_after = n + 1 < len(raw) and next_word_start - last["e"] <= min_cut_gap \
+            and raw[n + 1][0] != seg_id
+        start = max(prev_word_end if keep_before else first["s"] - pre, prev_word_end,
+                    removed_end_before[idx[0]], 0.0)
+        end = min(next_word_start if keep_after else last["e"] + post,
+                  removed_start_after[idx[-1] + 1],
                   clip["duration"])
         if items and start < items[-1].src_out:
             mid = (items[-1].src_out + start) / 2

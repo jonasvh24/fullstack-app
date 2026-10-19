@@ -143,10 +143,13 @@ def _ass_time(t: float) -> str:
 
 
 def ass_document(events: list[Event], width: int, height: int, style: str) -> str:
-    # Sizes scale with output height so preview and master frame identically.
-    size = round(height * (0.075 if style == "word" else 0.055))
-    outline = max(2, round(height * 0.004))
-    margin_v = round(height * 0.08)
+    # Sizes scale with the short side so preview, master and 9:16 frame identically.
+    base = min(width, height)
+    vertical = height > width
+    size = round(base * (0.075 if style == "word" else 0.055) * (1.15 if vertical else 1.0))
+    outline = max(2, round(base * 0.004))
+    # In 9:16 the platform's own buttons and caption bar own the bottom quarter.
+    margin_v = round(height * (0.26 if vertical else 0.08))
     margin_h = round(width * 0.08)
     header = (
         "[Script Info]\n"

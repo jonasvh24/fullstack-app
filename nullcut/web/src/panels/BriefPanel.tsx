@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { api, errorMessage } from "../api/client";
-import type { Brief, CaptionMode, Energy, MusicMode, Style, Track } from "../api/types";
+import type { Brief, BriefFormat, CaptionMode, Energy, MusicMode, Style, ThumbnailProfile, Track } from "../api/types";
 import { ErrorText } from "../components/ErrorText";
 import { JobProgress } from "../components/JobProgress";
 import { Segmented } from "../components/Segmented";
@@ -18,6 +18,8 @@ const DEFAULT_BRIEF: Brief = {
   music: { mode: "none", mood: "", energy: "mid", track_id: null },
   captions: { mode: "off" },
   extras: { zoom: 1, broll: 1, hook_required: false },
+  thumbnail_profile: "",
+  title_refs: "",
 };
 
 /** Fill any missing fields so the form is always fully controlled. */
@@ -26,7 +28,9 @@ function normalise(b: Partial<Brief> | null | undefined): Brief {
   return {
     ...DEFAULT_BRIEF,
     ...src,
-    format: "16:9",
+    format: src.format === "9:16" || src.format === "both" ? src.format : "16:9",
+    thumbnail_profile: src.thumbnail_profile ?? "",
+    title_refs: src.title_refs ?? "",
     music: { ...DEFAULT_BRIEF.music, ...(src.music ?? {}) },
     captions: { ...DEFAULT_BRIEF.captions, ...(src.captions ?? {}) },
     extras: { ...DEFAULT_BRIEF.extras, ...(src.extras ?? {}) },
@@ -114,6 +118,7 @@ export function BriefPanel({ ctx }: { ctx: ProjectContext }) {
   const [lenText, setLenText] = useState(() => lengthText(saved.target_s));
   const [styles, setStyles] = useState<Style[] | null>(null);
   const [tracks, setTracks] = useState<Track[] | null>(null);
+  const [profiles, setProfiles] = useState<ThumbnailProfile[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
@@ -121,11 +126,12 @@ export function BriefPanel({ ctx }: { ctx: ProjectContext }) {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.styles(), api.music()])
-      .then(([s, t]) => {
+    Promise.all([api.styles(), api.music(), api.thumbnailProfiles()])
+      .then(([s, t, tp]) => {
         if (cancelled) return;
         setStyles(s);
         setTracks(t);
+        setProfiles(tp);
       })
       .catch((e) => {
         if (!cancelled) setListError(errorMessage(e));
@@ -145,6 +151,7 @@ export function BriefPanel({ ctx }: { ctx: ProjectContext }) {
   useJobDone(planJob, () => navigate(`/p/${encodeURIComponent(project.id)}/storyboard`));
 
   const style = useMemo(() => styles?.find((s) => s.id === brief.style) ?? null, [styles, brief.style]);
+  const profile = profiles?.find((p) => p.id === brief.thumbnail_profile) ?? null;
   const set = <K extends keyof Brief>(k: K, v: Brief[K]) => {
     setError(null);
     setStatus(null);
@@ -223,7 +230,7 @@ export function BriefPanel({ ctx }: { ctx: ProjectContext }) {
         </p>
       )}
       {planJob && (isActive(planJob) || planJob.status === "failed") && <JobProgress job={planJob} />}
-      <ErrorText error={listError && `Styles and music: ${listError}`} />
+      <ErrorText error={listError && `Styles, music and thumbnail profiles: ${listError}`} />
 
       <div className="brief-grid">
         <div className="brief-col">
@@ -268,14 +275,30 @@ export function BriefPanel({ ctx }: { ctx: ProjectContext }) {
                     : "Blank for no target.")}
               </span>
             </div>
-            <Segmented<"16:9" | "9:16">
+            <Segmented<BriefFormat>
               legend="Format"
-              value="16:9"
-              onChange={() => set("format", "16:9")}
+              value={brief.format}
+              onChange={(v) => set("format", v)}
               options={[
                 { value: "16:9", label: "16:9" },
-                { value: "9:16", label: "9:16", disabled: true, hint: "Phase 2" },
+                { value: "9:16", label: "9:16" },
+                { value: "both", label: "Both" },
               ]}
+            />
+          </div>
+
+          <div className="field">
+            <label className="field-label" htmlFor="brief-title-refs">
+              Reference titles (optional, one per line)
+            </label>
+            <textarea
+              id="brief-title-refs"
+              className="input mono title-refs"
+              value={brief.title_refs}
+              onChange={(e) => set("title_refs", e.target.value)}
+              rows={4}
+              placeholder={"I tried every street food in Lisbon\nThe 5 euro day in Porto"}
+              spellCheck={false}
             />
           </div>
 
@@ -382,6 +405,36 @@ export function BriefPanel({ ctx }: { ctx: ProjectContext }) {
               </div>
             )}
           </fieldset>
+
+          <div className="field">
+            <label className="field-label" htmlFor="brief-thumb-profile">
+              Thumbnail profile
+            </label>
+            <select
+              id="brief-thumb-profile"
+              className="input"
+              value={brief.thumbnail_profile}
+              onChange={(e) => set("thumbnail_profile", e.target.value)}
+              aria-describedby={profile ? "brief-thumb-help" : undefined}
+            >
+              {!profile && (
+                <option value={brief.thumbnail_profile}>
+                  {brief.thumbnail_profile ? `${brief.thumbnail_profile} (unknown)` : "Select a profile"}
+                </option>
+              )}
+              {(profiles ?? []).map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                  {p.kind === "extracted" ? " (extracted)" : ""}
+                </option>
+              ))}
+            </select>
+            {profile && (
+              <span id="brief-thumb-help" className="field-help">
+                {profile.description}
+              </span>
+            )}
+          </div>
 
           <Segmented<CaptionMode>
             legend="Captions"

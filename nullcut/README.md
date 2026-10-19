@@ -1,6 +1,6 @@
 # nullcut
 
-Local AI video editor, Phase 1 (MVP) of the build plan. Three engines with a timeline file between them: **analyse** the footage once, **plan** the edit against a brief and a style, **compile and render** deterministically. The AI never touches pixels; it writes an Edit Plan, and plain code turns that into an OTIO timeline that FFmpeg executes.
+Local AI video editor, Phases 0 to 2 of the build plan. Three engines with a timeline file between them: **analyse** the footage once, **plan** the edit against a brief and a style, **compile and render** deterministically. The AI never touches pixels; it writes an Edit Plan, and plain code turns that into an OTIO timeline that FFmpeg executes.
 
 ```
 nullcut models pull defaults            # Parakeet ASR + YuNet faces, commercial licences
@@ -14,8 +14,57 @@ nullcut ingest ~/Footage/lisbon
 nullcut brief --text "fast travel vlog, open on the cliff jump" --target 4:00 --style cinematic-vlog --music energetic
 nullcut plan                            # may ask up to three questions; answer with --answer "..."
 nullcut preview                         # 720p from proxies, with Gate 1 QC and style match
-nullcut master                          # source resolution, titles, description, chapters, OTIO, FCPXML
+nullcut master                          # source resolution, titles, thumbnails, chapters, OTIO, FCPXML
 ```
+
+## Style engine (Phase 2)
+
+Style is a parameter vector, not a vibe (plan §5). `measure.py` reads every parameter from a finished video, and the same code runs on references and on nullcut's own renders. That closed loop is the point.
+
+| Parameter | Measured by |
+|---|---|
+| Pacing | hard cuts, including jump cuts: a per-cell discontinuity on a 4x4 grid, so a caption swap cannot fake one and a zoom (explained by a similarity transform) is not counted |
+| Silence | the pauses the transcript shows survived the edit |
+| Zooms | frame-to-frame scale from tracked features: eased zooms and punch-in cuts alike |
+| Max static | longest stretches between cuts and zooms |
+| Captions | OCR (PP-OCRv4, bundled): words per block, position, case, highlight colour (a hue inside the text the ring around it lacks) |
+| B-roll | share of speech time with no face on screen |
+| Music | level in long pauses (the bed) and in short ones (ducked under speech), tempo from below 150 Hz, cuts on the beat |
+| SFX | sustained high-band sweeps at cuts, not fricatives |
+| Colour | saturation, contrast, warmth, lift; an extracted look is fitted per project as a LUT |
+
+**Extract** 3 to 10 reference videos into a profile (`Styles` screen, or `POST /api/styles/extract`). What a finished video cannot show (beat template, hook cap, zoom easing) comes from the nearest shipped style, and the profile says which.
+
+**Match** runs on every render. Each parameter gets a score; anything under 80 % names the compiler rule that missed. **Try styles** renders the first 60 s of the current edit in two to four styles and measures each, so the creator picks by watching.
+
+**Six shipped styles:** Explainer, Retention max, Cinematic vlog, Podcast clip, Documentary, Tutorial. Tutorial's zooms follow the region of the screen that changes when there is no face.
+
+**9:16:** a full-height window follows the subject (faces, else motion) with a dead zone and eased motion; captions sit above the platform's own UI. Brief format `16:9`, `9:16` or `both`.
+
+**Thumbnails** (plan §9): frames mined from clean source footage (never the captioned master), scored for face size, expression, sharpness, stillness and nearness to the title's moment; IS-Net cutout (GrabCut fallback); three shipped profiles (reaction face, object hero with arrow, before/after split) or one extracted from 20 to 50 reference thumbnails. Every candidate is checked at 240 px wide: text contrast 4.5:1 or better, a readable face, nothing under the timestamp corner. A failed check means recompose, never ship.
+
+**Titles** follow the pattern of the creator's own reference titles when given (length, numbers, questions, case).
+
+## Gate 2
+
+`scripts/gate2.py` closes the loop. Three creator styles with hidden parameters render three reference videos each; extraction sees only the videos; each learned profile is applied to different footage (another face, other words) and the render is measured.
+
+| Hidden style | Match | Recovered from 3 references |
+|---|---|---|
+| fast-talker | **92 %** | zooms 12 → 11.1/min, word captions, upper case, highlight #00E5FF → #00E0F5, SFX on 50 → 57 % of cuts |
+| calm-teacher | **84 %** | zooms 2 → 2.7/min, clean captions, sentence case, music −26 → −27.6 dB under speech |
+| music-montage | **84 %** | no captions, B-roll 45 → 47 %, music −14 → −16.8 dB under speech |
+
+Gate 2 passes: 80 % or better on all three. Through the API, the learned fast-talker profile mastered at 91 % in both 16:9 and 9:16, with three thumbnails passing every check and titles in the reference pattern.
+
+What it did not recover, and why:
+
+- **Silence threshold** reads 240 ms whatever the hidden value (150, 300 or 420 ms). Synthesised speech has few natural pauses in the band that separates those styles. `[MED]`
+- **Beat-snapped cuts** were not recovered for music-montage: cuts on the beat stayed under the 40 % that turns snapping on. `[MED]`
+- **Red highlight over red skin** read as white. The hue-ring test needs the highlight to differ from what surrounds the text. `[MED]`
+- **SFX on calm-teacher and music-montage** scored 0: both read 25–29 % SFX against a true 0 %. Fricatives at B-roll edges mid-sentence survive the speech margin because ASR trims word ends. `[LOW]` Cheapest test: ten real creator videos with known SFX use, scored by hand against the measure.
+
+References made by nullcut itself are friendlier than real creators' videos. This proves the loop and the measurements, not taste.
 
 ## Pipeline
 
@@ -80,7 +129,7 @@ React + TypeScript + Vite in `web/`, built into `src/nullcut/web_dist/` and serv
 
 ## Tests
 
-`python -m pytest -q`: 70 tests. The LLM planner protocol runs against a scripted OpenAI-compatible server: tool calls, schema request, repair, questions, fallback. The zoom renderer is checked against a reference crop. The HTTP API is driven end to end, from folder to package.
+`python -m pytest -q`: 87 tests, including the style engine (measurement, extraction, match) and the Phase 2 API: extract, compare, try, both formats, thumbnails. The LLM planner protocol runs against a scripted OpenAI-compatible server: tool calls, schema request, repair, questions, fallback. The zoom renderer is checked against a reference crop. The HTTP API is driven end to end, from folder to package.
 
 ## Verified
 
@@ -91,9 +140,10 @@ On synthesised speech (flite) over a real face photo, Parakeet ASR, no sidecars:
 - **No LLM has planned an edit yet.** No model endpoint is reachable from the build environment; the protocol is tested against a scripted server. The first real run against the Council is the test. `[MED]`
 - **No human voice or real footage yet.** Everything above ran on synthesised speech and test patterns. One real 10-minute talking head through `nullcut serve` settles most of what remains. `[MED]`
 - **No VLM or embeddings.** Scene captions need `NULLCUT_VLM_URL`; B-roll matching falls back to shot quality when there are none. SigLIP embeddings for `search_clips` are deferred; search is lexical over transcripts and captions.
-- **Expression intensity is not measured.** YuNet gives boxes, not blendshapes; zoom targets use the box. MediaPipe blendshapes are the Phase 2 upgrade with the thumbnail engine.
+- **Expression intensity is not measured.** YuNet gives boxes, not blendshapes; zoom targets and thumbnail scoring use box size, sharpness and stillness. MediaPipe blendshapes remain the upgrade.
+- **No real creator references yet.** Gate 2 ran on nullcut's own renders. Three real channels, three videos each, is the next test of extraction. `[MED]`
+- **Colour looks beyond the transfer clamps** (heavy teal-orange, crushed blacks) are approximated, not matched; the clamps keep skin tones safe.
 - **Music analysis is librosa's.** It read a 120 bpm test track as 117.5 bpm; snapping absorbs that, but a real library needs checking. Vocal rejection (Demucs) is not built.
 - **Graphics are not built.** Rule 3's third fallback ("else a graphic") falls back to a zoom.
-- **Style match is computed from the timeline**, not measured from rendered pixels. Phase 2's style engine measures the output.
 - **SFX are synthesised** (whoosh, pop) until a curated pack is chosen.
 - **NVENC is untested.** There is no GPU in the build environment.

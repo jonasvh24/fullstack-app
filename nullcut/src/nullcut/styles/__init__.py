@@ -30,12 +30,35 @@ def _validate(style: dict, source: str) -> dict:
     return style
 
 
+def user_dir() -> Path:
+    from .. import config
+    return config.nullcut_home() / "styles"
+
+
 def all_styles() -> dict[str, dict]:
+    """Shipped profiles, then profiles extracted from the user's references."""
     out = {}
     for path in sorted(HERE.glob("*.json")):
         style = _validate(json.loads(path.read_text()), path.name)
+        style.setdefault("kind", "shipped")
+        style.setdefault("sources", [])
         out[style["id"]] = style
+    if user_dir().is_dir():
+        for path in sorted(user_dir().glob("*.json")):
+            try:
+                style = _validate(json.loads(path.read_text()), path.name)
+            except (ValueError, KeyError, json.JSONDecodeError):
+                continue  # a damaged user file must not take the shipped styles down with it
+            style["kind"] = "extracted"
+            out[style["id"]] = style
     return out
+
+
+def delete(style_id: str) -> None:
+    path = user_dir() / f"{style_id}.json"
+    if not path.exists():
+        raise ValueError(f"{style_id} is not an extracted style")
+    path.unlink()
 
 
 def get(style_id: str) -> dict:

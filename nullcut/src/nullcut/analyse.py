@@ -18,7 +18,7 @@ from . import asr, config, media, vision
 from .project import Project, file_fingerprint, find_clips, read_json, write_json
 
 # Bump when the per-clip record changes shape or meaning; stale caches re-run.
-ANALYSIS_VERSION = 6
+ANALYSIS_VERSION = 7
 ENERGY_HOP_S = 0.1
 SENTENCE_END = re.compile(r"[.?!…]['\"”’)]*$")
 

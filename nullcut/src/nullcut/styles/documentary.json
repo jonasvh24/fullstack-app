@@ -1,0 +1,21 @@
+{
+  "id": "documentary",
+  "name": "Documentary",
+  "description": "Narration-led and slow: long holds, natural pauses kept, heavy B-roll, a quiet bed, slow push-ins, soft grade.",
+  "pacing": {"silence_ms": 600, "hook_silence_ms": 450, "max_static_s": 12.0, "cuts_per_min": 5},
+  "zoom": {"per_minute": 1, "scale_min": 1.03, "scale_max": 1.06, "ease_s": 3.0, "hold_s": 6.0, "drift": true},
+  "captions": {"mode": "clean", "max_words": 7, "case": "sentence", "highlight": "#FFFFFF", "emphasis": false},
+  "broll": {"density": 0.55, "min_s": 2.5, "max_s": 8.0},
+  "music": {"presence": true, "under_speech_db": -24, "gap_db": -10, "energy": "low", "beat_snap": false, "crossfade_s": 3.0},
+  "sfx": {"cut_share": 0.0, "zoom_share": 0.0},
+  "colour": {"saturation": 0.9, "contrast": 1.05, "warmth": 0.02, "lift": 0.03},
+  "transitions": {"allowed": ["cut"]},
+  "hook": {"max_s": 20, "required": true},
+  "beats": [
+    {"role": "hook", "share": 0.08},
+    {"role": "setup", "share": 0.22},
+    {"role": "body", "share": 0.50},
+    {"role": "payoff", "share": 0.15},
+    {"role": "cta", "share": 0.05}
+  ]
+}

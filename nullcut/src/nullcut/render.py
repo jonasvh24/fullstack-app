@@ -92,15 +92,36 @@ def zoom_filter(zooms: list[dict], fps: float) -> str:
     return f"perspective={args}:sense=source:interpolation=cubic:eval=frame"
 
 
+def track_expr(track: list[list[float]], fps: float) -> str:
+    """Piecewise-linear subject centre (0..1) over item-local time, on frame number."""
+    T = f"(n/{fps:.6f})"
+    expr = f"{track[-1][1]:.4f}"
+    for (t0, c0), (t1, c1) in reversed(list(zip(track, track[1:]))):
+        if t1 <= t0:
+            continue
+        seg = f"{c0:.4f}+({c1 - c0:.4f})*({T}-{t0:.3f})/{t1 - t0:.3f}"
+        expr = f"if(lt({T},{t1:.3f}),{seg},{expr})"
+    return expr
+
+
 def render_item(src: Path, item: Item, out: Path, ass: Path | None, size: tuple[int, int],
                 quality: str, fps: float, zooms: list[dict] | None = None,
-                brolls: list[dict] | None = None, lut: Path | None = None) -> None:
+                brolls: list[dict] | None = None, lut: Path | None = None,
+                reframe: list[list[float]] | None = None) -> None:
     w, h = size
     rate = fps_fraction(fps)
+    if reframe:
+        # 9:16 from landscape: a full-height window that follows the subject, clamped
+        # inside the frame. Portrait sources keep their full width.
+        cx = track_expr(reframe, fps)
+        fit = [f"crop=w='min(iw,ih*{w}/{h})':h=ih:x='clip(({cx})*iw-ow/2,0,iw-ow)':y=0",
+               f"scale={w}:{h}:flags=lanczos"]
+    else:
+        fit = [f"scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos",
+               f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black"]
     base = [
         f"fps={rate}",
-        f"scale={w}:{h}:force_original_aspect_ratio=decrease:flags=lanczos",
-        f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black",
+        *fit,
         "setsar=1",
         # A source that ends a frame early must not shorten the item, or every
         # later cut drifts against the audio. Clone the last frame instead.
@@ -284,7 +305,8 @@ def measure_loudness(path: Path) -> dict:
 
 def render(project: Project, timeline_path: Path, quality: str = "master",
            size: tuple[int, int] | None = None, jobs: int | None = None,
-           log: Log = print, progress: Callable[[float, str], None] | None = None) -> dict:
+           log: Log = print, progress: Callable[[float, str], None] | None = None,
+           fmt: str = "16:9") -> dict:
     progress = progress or (lambda f, m: None)
     media.require_ffmpeg()
     meta, items = timeline.load(timeline_path)
@@ -293,6 +315,10 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
     fps = meta["fps"]
     clips = meta["clips"]
     size = size or (config.MASTER_SIZE if quality == "master" else config.PREVIEW_SIZE)
+    vertical = fmt == "9:16"
+    if vertical:
+        size = {"master": (1080, 1920), "preview": (720, 1280)}[quality]
+    reframes = meta.get("reframe") or []
     cap = meta.get("captions") or {}
     style = cap.get("style", "clean")
     words = captions.output_words(items, fps, meta.get("emphasis"))
@@ -310,9 +336,10 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
     seg_paths: list[Path] = []
     cursor = 0
     enc = media.encode_args(quality, fps)
-    for it in items:
+    for k, it in enumerate(items):
         t0, t1 = cursor / fps, (cursor + it.frames) / fps
         cursor += it.frames
+        track = (reframes[k] if k < len(reframes) else [[0.0, 0.5]]) if vertical else None
         ass_text = None
         if events:
             ass_text = captions.ass_document(captions.slice_events(events, t0, t1),
@@ -334,7 +361,8 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
                            "in": it.src_in, "frames": it.frames, "fps": fps, "size": size,
                            "enc": enc, "ass": ass_text, "zooms": zooms,
                            "broll": [{k: v for k, v in b.items() if k != "src"} for b in brolls]
-                           + [b["src"] for b in brolls], "lut": str(lut) if lut else None})
+                           + [b["src"] for b in brolls], "lut": str(lut) if lut else None,
+                           "reframe": track})
         out = cache / f"seg_{key}.mp4"
         seg_paths.append(out)
         if not out.exists():
@@ -342,7 +370,7 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
             if ass_text is not None:
                 ass_path = cache / f"seg_{key}.ass"
                 ass_path.write_text(ass_text)
-            jobs_todo.append((src, it, out, ass_path, zooms, brolls))
+            jobs_todo.append((src, it, out, ass_path, zooms, brolls, track))
 
     missing = {j[0] for j in jobs_todo if not j[0].exists()} | {
         Path(b["src"]) for j in jobs_todo for b in j[5] if not Path(b["src"]).exists()}
@@ -354,8 +382,8 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
     workers = jobs or int(os.environ.get("NULLCUT_RENDER_JOBS", min(4, os.cpu_count() or 1)))
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = [pool.submit(render_item, src, it, out, ass, size, quality, fps, zooms,
-                               brolls, lut)
-                   for src, it, out, ass, zooms, brolls in jobs_todo]
+                               brolls, lut, track)
+                   for src, it, out, ass, zooms, brolls, track in jobs_todo]
         for n, f in enumerate(futures, 1):
             f.result()
             progress(0.85 * n / len(futures), f"encoded {n}/{len(futures)} items")
@@ -364,7 +392,7 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
 
     version = meta["version"]
     kind = meta.get("stem", "rough")
-    stem = f"{kind}.v{version}.{quality}"
+    stem = f"{kind}.v{version}.{quality}" + (".vertical" if vertical else "")
     renders = project.path("renders")
 
     concat_list = cache / f"{stem}.concat.txt"

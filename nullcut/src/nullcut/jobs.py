@@ -19,8 +19,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-LANES = {"ingest": "analyse", "music_import": "analyse", "plan": "llm",
-         "preview": "encode", "master": "encode"}
+LANES = {"ingest": "analyse", "music_import": "analyse", "style_extract": "analyse",
+         "thumb_extract": "analyse", "plan": "llm",
+         "preview": "encode", "master": "encode", "try": "encode"}
 
 
 def _now() -> str:

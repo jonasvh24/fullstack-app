@@ -116,3 +116,67 @@ interface Track { id: string; name: string; duration: number; bpm: number; energ
 | GET | `/media/{project_id}/{path}` | | file, with HTTP Range support for video |
 
 Errors: `{detail: string}` with 4xx/5xx.
+
+## Phase 2 additions
+
+### Types
+
+```ts
+type Format = "16:9" | "9:16";
+
+interface Style {                     // extends Phase 1
+  id: string; name: string; description: string; params: Record<string, any>;
+  kind: "shipped" | "extracted";
+  sources: string[];                  // reference file names, extracted styles only
+}
+
+interface MatchEntry { score: number; measured: number | string | null; wanted: number | string | null; note: string }
+// score 0..1; note names the rule that missed when score < 0.8, else "".
+
+interface Brief {                     // Phase 1 fields plus:
+  format: "16:9" | "9:16" | "both";   // 9:16 now enabled
+  thumbnail_profile: string;          // id from /api/thumbnail-profiles
+  title_refs: string;                 // reference titles, one per line (may be empty)
+}
+
+interface Render {                    // Phase 1 fields plus:
+  format: Format;
+  qc: { /* Phase 1 fields */ style_match: Record<string, number>;
+        style_detail: Record<string, MatchEntry>;   // measured on the rendered file
+        style_overall: number };                    // 0..1, mean of style_match
+}
+
+interface TryRender { style: string; style_name: string; url: string; duration_s: number;
+                      match: Record<string, MatchEntry>; overall: number }
+
+interface Thumbnail {
+  url: string; rank: number; score: number; text: string; layout: string;
+  frame_t: number;                    // seconds into the master the face came from
+  checks: { contrast_ratio: number; contrast_ok: boolean; face_px: number; face_ok: boolean;
+            corner_clear: boolean; passed: boolean };
+}
+
+interface Package {                   // Phase 1 fields plus:
+  thumbnails: Thumbnail[];            // three, ranked
+  files: { /* Phase 1 */ mp4_vertical: string | null; srt: string; vtt: string; otio: string; fcpxml: string | null };
+}
+
+interface ThumbnailProfile { id: string; name: string; description: string; kind: "shipped" | "extracted"; params: Record<string, any> }
+
+interface CompareRow { key: string; label: string; unit: string; min: number; max: number;
+                       values: Record<string, number | null> }     // style id -> value
+```
+
+### Endpoints
+
+| Method | Path | Body | Returns |
+|---|---|---|---|
+| POST | `/api/styles/extract` | `{name, folder}` (3–10 reference videos on the server) | `Job` (result: `Style`) |
+| DELETE | `/api/styles/{id}` | | `{deleted: id}` (extracted styles only; 400 for shipped) |
+| GET | `/api/styles/compare?ids=a,b,c` | | `CompareRow[]` (2–4 ids; same axes for every style) |
+| GET | `/api/thumbnail-profiles` | | `ThumbnailProfile[]` |
+| POST | `/api/thumbnail-profiles/extract` | `{name, folder}` (20–50 reference thumbnails) | `Job` (result: `ThumbnailProfile`) |
+| POST | `/api/projects/{id}/try` | `{styles: string[] (2–4), seconds?: number}` | `Job` (result: `{renders: TryRender[]}`) |
+| GET | `/api/projects/{id}/try` | | `TryRender[]` (latest try run; empty array if none) |
+
+`POST /api/projects/{id}/preview` and `/master` render every format the brief asks for. `GET /api/projects/{id}/renders` lists all of them with `format`. The master job's result keeps the Phase 1 shape: `{render, package}`, where `render` is the 16:9 one (or the 9:16 one when the brief is 9:16 only), and `package.thumbnails` holds three ranked thumbnails.

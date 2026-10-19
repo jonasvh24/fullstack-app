@@ -39,6 +39,8 @@ BRIEF_DEFAULT = {
     "music": {"mode": "none", "mood": "", "energy": "mid", "track_id": None},
     "captions": {"mode": "clean"},
     "extras": {"zoom": 1.0, "broll": 1.0, "hook_required": True},
+    "thumbnail_profile": "",
+    "title_refs": "",
 }
 
 # Words that carry a claim or a jolt; the deterministic planner punches these.
@@ -51,7 +53,7 @@ CTA_WORDS = {"subscribe", "watching", "comment", "follow", "link", "abonneer", "
              "kijken", "volg"}
 STOP = {"the", "a", "an", "and", "or", "of", "to", "in", "on", "is", "it", "that", "this",
         "we", "i", "you", "for", "with", "be", "are", "was", "at", "as", "de", "het", "een",
-        "en", "van", "dat", "ik", "je", "is", "op", "met", "voor"}
+        "en", "van", "dat", "ik", "je", "op", "met", "voor"}
 
 
 # --- brief ------------------------------------------------------------------
@@ -84,8 +86,8 @@ def save_brief(project: Project, brief: dict) -> dict:
         if not 15 <= t <= 1800:
             raise ValueError("length must be between 0:15 and 30:00")
         merged["target_s"] = t
-    if merged["format"] != "16:9":
-        raise ValueError("9:16 arrives in Phase 2")
+    if merged["format"] not in ("16:9", "9:16", "both"):
+        raise ValueError("format must be 16:9, 9:16 or both")
     styles.get(merged["style"])  # raises on unknown style
     if merged["captions"]["mode"] not in ("off", "clean", "word"):
         raise ValueError("captions must be off, clean or word")
@@ -662,7 +664,7 @@ def edit_plan(project: Project, edits: list[dict], log: Log = print) -> dict:
 
 
 def _save(project: Project, doc: dict, style: dict | None, lengths: dict, log: Log,
-          edited: bool = False) -> dict:
+          edited: bool = False, persist: bool = True) -> dict:
     brief = doc.get("brief") or load_brief(project)
     sol = None
     if doc["beats"] and style is not None:
@@ -702,10 +704,37 @@ def _save(project: Project, doc: dict, style: dict | None, lengths: dict, log: L
                      "shortfall_s": sol.shortfall_s if sol else 0.0,
                      "notes": sol.notes if sol else []}
     doc["brief_hash"] = stable_hash(brief)
+    if not persist:
+        doc["version"] = 0
+        return doc
     version, path = project.next_version("plans", "edit_plan", ".json")
     doc["version"] = version
     write_json(path, doc)
     return doc
+
+
+def trial_plan(project: Project, style_id: str, log: Log = print) -> dict:
+    """The current plan's content under another style, solved but never saved (plan §5:
+    "try both" compares styles on the same story, not two different edits)."""
+    from copy import deepcopy
+
+    index = project.clip_index()
+    brief = {**load_brief(project), "style": style_id}
+    style = styles.apply_extras(styles.get(style_id), brief["extras"])
+    lengths = segment_lengths(index, style)
+    base = latest_plan(project, with_beats=True)
+    if base:
+        doc = deepcopy(base)
+        for b in doc["beats"]:
+            b["segment_ids"] = b["segment_ids"] + b.get("dropped_ids", [])
+            b["dropped_ids"] = []
+            b["locked"] = False  # locks bind the real plan, not a trial
+    else:
+        doc = plan_heuristic(brief, style, index, lengths["body"])
+        for n, b in enumerate(doc["beats"]):
+            b["id"] = f"b{n + 1}"
+    doc.update({"planner": "trial", "style": style_id, "questions": [], "brief": brief})
+    return _save(project, doc, style, lengths, log, persist=False)
 
 
 def plan_hash(doc: dict) -> str:

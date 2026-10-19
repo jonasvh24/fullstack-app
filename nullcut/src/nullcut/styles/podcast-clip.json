@@ -1,0 +1,21 @@
+{
+  "id": "podcast-clip",
+  "name": "Podcast clip",
+  "description": "Two speakers, word-by-word captions, punch-ins on the speaker, no music. Built to be reframed to 9:16.",
+  "pacing": {"silence_ms": 250, "hook_silence_ms": 180, "max_static_s": 4.0, "cuts_per_min": 14},
+  "zoom": {"per_minute": 4, "scale_min": 1.08, "scale_max": 1.15, "ease_s": 0.15, "hold_s": 2.0, "drift": false},
+  "captions": {"mode": "word", "max_words": 3, "case": "upper", "highlight": "#00E5FF", "emphasis": true},
+  "broll": {"density": 0.05, "min_s": 1.5, "max_s": 3.0},
+  "music": {"presence": false, "under_speech_db": -26, "gap_db": -18, "energy": "low", "beat_snap": false, "crossfade_s": 1.0},
+  "sfx": {"cut_share": 0.0, "zoom_share": 0.0},
+  "colour": {"saturation": 1.05, "contrast": 1.06, "warmth": 0.0, "lift": 0.0},
+  "transitions": {"allowed": ["cut"]},
+  "hook": {"max_s": 8, "required": true},
+  "beats": [
+    {"role": "hook", "share": 0.15},
+    {"role": "setup", "share": 0.15},
+    {"role": "body", "share": 0.55},
+    {"role": "payoff", "share": 0.10},
+    {"role": "cta", "share": 0.05}
+  ]
+}

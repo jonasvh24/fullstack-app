@@ -119,7 +119,14 @@ def analyse_visual(project, clip: dict, log: Log = print) -> dict:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         small = cv2.resize(gray, (FLOW_W, flow_h), interpolation=cv2.INTER_AREA)
         motion = 0.0
+        moving = None
         if prev_small is not None:
+            # Where the picture changes: the subject of a screen recording (cursor, typing).
+            delta = cv2.absdiff(prev_small, small) > 20
+            if delta.mean() > 0.002:
+                ys, xs = np.nonzero(delta)
+                moving = [round(float(np.median(xs)) / FLOW_W, 4),
+                          round(float(np.median(ys)) / flow_h, 4), round(float(delta.mean()), 4)]
             flow = cv2.calcOpticalFlowFarneback(prev_small, small, None, 0.5, 2, 9, 2, 5, 1.1, 0)
             # Pixels per second at flow width, so the number means the same at any frame rate.
             motion = float(np.median(np.linalg.norm(flow, axis=2))) * SAMPLE_FPS
@@ -131,6 +138,7 @@ def analyse_visual(project, clip: dict, log: Log = print) -> dict:
             "luma": round(float(gray.mean()) / 255, 3),
             "clip": round(float(((gray < 8) | (gray > 247)).mean()), 3),
             "face": faces.largest(frame),
+            "moving": moving,
         })
         ms = round(t * 1000)
         if ms in key_set:
@@ -160,6 +168,8 @@ def analyse_visual(project, clip: dict, log: Log = print) -> dict:
         "keyframes": {str(k): v for k, v in sorted(keyframes.items())},
         "captions": {str(k): v for k, v in sorted(captions.items())},
         "faces": [[s["t"], *s["face"]] for s in samples if s["face"]],
+        # Only where no face is seen: a face always outranks motion as the subject.
+        "motion": [[s["t"], *s["moving"]] for s in samples if s["moving"] and not s["face"]],
         "quality": per_second,
     }
 

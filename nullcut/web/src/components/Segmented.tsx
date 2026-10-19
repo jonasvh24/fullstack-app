@@ -13,8 +13,10 @@ export function Segmented<T extends string>({
   value,
   options,
   onChange,
+  hideLegend = false,
 }: {
   legend: string;
+  hideLegend?: boolean;
   value: T;
   options: SegOption<T>[];
   onChange: (v: T) => void;
@@ -22,7 +24,7 @@ export function Segmented<T extends string>({
   const name = useId();
   return (
     <fieldset className="field seg-field">
-      <legend className="field-label">{legend}</legend>
+      <legend className={hideLegend ? "sr-only" : "field-label"}>{legend}</legend>
       <div className="seg">
         {options.map((o) => (
           <label key={o.value} className={`seg-opt ${o.disabled ? "is-disabled" : ""}`} title={o.hint}>

@@ -1,0 +1,21 @@
+{
+  "id": "tutorial",
+  "name": "Tutorial",
+  "description": "Screen capture with voice-over: zooms follow where the screen changes, clean captions, a low bed, few cuts.",
+  "pacing": {"silence_ms": 350, "hook_silence_ms": 250, "max_static_s": 6.0, "cuts_per_min": 10},
+  "zoom": {"per_minute": 5, "scale_min": 1.25, "scale_max": 1.6, "ease_s": 0.4, "hold_s": 3.0, "drift": false},
+  "captions": {"mode": "clean", "max_words": 6, "case": "sentence", "highlight": "#FFC400", "emphasis": true},
+  "broll": {"density": 0.05, "min_s": 1.5, "max_s": 3.0},
+  "music": {"presence": true, "under_speech_db": -28, "gap_db": -18, "energy": "low", "beat_snap": false, "crossfade_s": 1.0},
+  "sfx": {"cut_share": 0.0, "zoom_share": 0.3},
+  "colour": {"saturation": 1.0, "contrast": 1.02, "warmth": 0.0, "lift": 0.0},
+  "transitions": {"allowed": ["cut"]},
+  "hook": {"max_s": 15, "required": true},
+  "beats": [
+    {"role": "hook", "share": 0.06},
+    {"role": "setup", "share": 0.14},
+    {"role": "body", "share": 0.65},
+    {"role": "payoff", "share": 0.10},
+    {"role": "cta", "share": 0.05}
+  ]
+}

@@ -31,7 +31,7 @@ def wait(client, job, timeout=300):
 
 def test_full_flow_from_folder_to_package(client, footage_broll):
     assert client.get("/api/health").json()["encoder"] in ("libx264", "h264_nvenc")
-    assert {s["id"] for s in client.get("/api/styles").json()} == \
+    assert {s["id"] for s in client.get("/api/styles").json()} >= \
            {"explainer", "retention-max", "cinematic-vlog"}
 
     r = client.post("/api/projects", json={"source_dir": str(footage_broll), "name": "Flow"})

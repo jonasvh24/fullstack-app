@@ -1,13 +1,21 @@
 import type { Job } from "../api/types";
 import { isActive } from "../lib/jobs";
 
-const LABEL: Record<Job["kind"], string> = {
+const LABEL: Record<string, string> = {
   ingest: "Ingest",
   plan: "Plan",
   preview: "Preview render",
   master: "Master render",
   music_import: "Music import",
 };
+
+/** Known kinds get a fixed label; Phase 2 kinds are not named by the contract, so humanise them. */
+export function jobLabel(kind: string): string {
+  const k = LABEL[kind];
+  if (k) return k;
+  const h = kind.replace(/[_-]+/g, " ").trim();
+  return h ? h[0].toUpperCase() + h.slice(1) : "Job";
+}
 
 /** Progress bar and current step for a job. Failed jobs show their error in red monospace. */
 export function JobProgress({ job, showDone = false }: { job: Job | null; showDone?: boolean }) {
@@ -18,7 +26,7 @@ export function JobProgress({ job, showDone = false }: { job: Job | null; showDo
   return (
     <div className={`job job-${job.status}`} aria-live="polite">
       <div className="job-head">
-        <span className="job-kind">{LABEL[job.kind] ?? job.kind}</span>
+        <span className="job-kind">{jobLabel(job.kind)}</span>
         <span className={`tag tag-${job.status}`}>{job.status}</span>
         <span className="mono job-pct">{active || job.status === "done" ? `${Math.round(p * 100)}%` : ""}</span>
         <span className="job-msg" title={job.message}>
@@ -29,7 +37,7 @@ export function JobProgress({ job, showDone = false }: { job: Job | null; showDo
         <div
           className="bar"
           role="progressbar"
-          aria-label={`${LABEL[job.kind] ?? job.kind} progress`}
+          aria-label={`${jobLabel(job.kind)} progress`}
           aria-valuemin={0}
           aria-valuemax={100}
           aria-valuenow={Math.round(p * 100)}

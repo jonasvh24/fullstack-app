@@ -1,0 +1,5 @@
+{"id": "before-after", "name": "Before and after split",
+ "description": "Two moments side by side, labelled BEFORE and AFTER, split by a hard diagonal.",
+ "layout": "split", "face_share": 0.40, "face_x": 0.25, "words": 2, "text_height": 0.12,
+ "text_colour": "#FFFFFF", "accent": "#00D26A", "outline": true, "cutout": false,
+ "background": "photo", "saturation": 1.15, "contrast": 1.1, "arrow": false}

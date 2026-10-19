@@ -14,7 +14,8 @@ from fastapi import Body, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, config, llm, media, models, music, pipeline, plan, styles, timeline
+from . import (__version__, config, llm, media, models, music, pipeline, plan, style_engine,
+               styles, thumbnails, timeline)
 from .jobs import JobStore
 from .project import Project, natural_key, open_or_create, read_json
 
@@ -74,12 +75,14 @@ def create_app(home: Path | None = None) -> FastAPI:
                            "shortfall_s": sol.get("shortfall_s", 0.0)}}
 
     def render_view(p: Project, rec: dict) -> dict:
-        return {"kind": rec["kind"], "version": rec["version"], "url": media_url(p, rec["path"]),
+        return {"kind": rec["kind"], "format": rec.get("format", "16:9"),
+                "version": rec["version"], "url": media_url(p, rec["path"]),
                 "duration_s": rec["duration_s"], "qc": rec["qc"]}
 
     def renders(p: Project) -> list[dict]:
         recs = [read_json(f) for f in p.path("renders").glob("edit.v*.json")]
-        recs.sort(key=lambda r: (r["version"], r["kind"] == "master"), reverse=True)
+        recs.sort(key=lambda r: (r["version"], r["kind"] == "master",
+                                 r.get("format", "16:9") == "16:9"), reverse=True)
         return recs
 
     # --- endpoints -----------------------------------------------------------------
@@ -97,9 +100,62 @@ def create_app(home: Path | None = None) -> FastAPI:
 
     @app.get("/api/styles")
     def list_styles() -> list[dict]:
+        hidden = ("id", "name", "description", "kind", "sources", "measured")
         return [{"id": s["id"], "name": s["name"], "description": s["description"],
-                 "params": {k: v for k, v in s.items() if k not in ("id", "name", "description")}}
+                 "kind": s.get("kind", "shipped"), "sources": s.get("sources", []),
+                 "params": {k: v for k, v in s.items() if k not in hidden}}
                 for s in styles.all_styles().values()]
+
+    @app.post("/api/styles/extract")
+    def extract_style(body: dict = Body(...)) -> dict:
+        folder = Path(str(body.get("folder", ""))).expanduser()
+        name = str(body.get("name", "")).strip()
+        if not name:
+            raise HTTPException(400, "give the style a name")
+        if not folder.is_dir():
+            raise HTTPException(400, f"{folder} is not a folder on this machine")
+
+        def run(progress) -> dict:
+            prof = style_engine.extract(name, folder, log=lambda m: None, progress=progress)
+            return next(x for x in list_styles() if x["id"] == prof["id"])
+
+        return jobs.submit("_styles", "style_extract", run)
+
+    @app.delete("/api/styles/{sid}")
+    def delete_style(sid: str) -> dict:
+        try:
+            styles.delete(sid)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"deleted": sid}
+
+    @app.get("/api/styles/compare")
+    def compare_styles(ids: str) -> list[dict]:
+        try:
+            return style_engine.compare([i for i in ids.split(",") if i])
+        except (KeyError, ValueError) as exc:
+            raise HTTPException(400, str(exc).strip("'\"")) from exc
+
+    @app.get("/api/thumbnail-profiles")
+    def list_thumb_profiles() -> list[dict]:
+        hidden = ("id", "name", "description", "kind", "measured")
+        return [{"id": t["id"], "name": t["name"], "description": t["description"],
+                 "kind": t["kind"], "params": {k: v for k, v in t.items() if k not in hidden}}
+                for t in thumbnails.all_profiles().values()]
+
+    @app.post("/api/thumbnail-profiles/extract")
+    def extract_thumb_profile(body: dict = Body(...)) -> dict:
+        folder = Path(str(body.get("folder", ""))).expanduser()
+        name = str(body.get("name", "")).strip()
+        if not name or not folder.is_dir():
+            raise HTTPException(400, "give a name and a folder of reference thumbnails")
+
+        def run(progress) -> dict:
+            prof = thumbnails.extract_profile(name, folder, log=lambda m: None,
+                                              progress=progress)
+            return next(x for x in list_thumb_profiles() if x["id"] == prof["id"])
+
+        return jobs.submit("_thumbs", "thumb_extract", run)
 
     @app.get("/api/music")
     def list_music() -> list[dict]:
@@ -232,6 +288,33 @@ def create_app(home: Path | None = None) -> FastAPI:
         if doc is None:
             raise HTTPException(409, "plan the edit first")
 
+    def try_view(p: Project, r: dict) -> dict:
+        return {"style": r["style"], "style_name": r["style_name"],
+                "url": media_url(p, r["path"]), "duration_s": r["duration_s"],
+                "match": r["match"], "overall": r["overall"]}
+
+    @app.post("/api/projects/{pid}/try")
+    def post_try(pid: str, body: dict = Body(...)) -> dict:
+        p = project(pid)
+        if not p.clip_index_path.exists():
+            raise HTTPException(409, "ingest has not finished")
+        ids = [str(x) for x in body.get("styles", [])]
+        known = styles.all_styles()
+        if not 2 <= len(ids) <= 4 or any(i not in known for i in ids):
+            raise HTTPException(400, "pick two to four known styles")
+        seconds = float(body.get("seconds") or 60)
+        busy = jobs.busy(p.id, "try")
+        if busy:
+            return busy
+        return jobs.submit(p.id, "try", lambda progress: {"renders": [
+            try_view(p, r) for r in pipeline.try_styles(p, ids, seconds, progress)["renders"]]})
+
+    @app.get("/api/projects/{pid}/try")
+    def get_try(pid: str) -> list[dict]:
+        p = project(pid)
+        latest = p.path("renders", "try", "latest.json")
+        return [try_view(p, r) for r in read_json(latest)["renders"]] if latest.exists() else []
+
     @app.get("/api/projects/{pid}/timeline")
     def get_timeline(pid: str) -> dict:
         p = project(pid)
@@ -274,10 +357,16 @@ def create_app(home: Path | None = None) -> FastAPI:
         return {"titles": [{k: t[k] for k in ("text", "rationale", "verified")}
                            for t in pkg["titles"]],
                 "description": pkg["description"], "chapters": pkg["chapters"],
+                "thumbnails": [{"url": media_url(p, t["path"]), "rank": t["rank"],
+                                "score": t["score"], "text": t["text"], "layout": t["layout"],
+                                "frame_t": t["frame_t"],
+                                "checks": t["checks"]}
+                               for t in pkg.get("thumbnails", [])],
                 "files": {"srt": media_url(p, files["srt"]), "vtt": media_url(p, files["vtt"]),
                           "otio": media_url(p, files["otio"]),
                           "fcpxml": media_url(p, files.get("fcpxml")),
-                          "mp4": media_url(p, files["mp4"])}}
+                          "mp4": media_url(p, files["mp4"]),
+                          "mp4_vertical": media_url(p, files.get("mp4_vertical"))}}
 
     @app.get("/api/projects/{pid}/package")
     def get_package(pid: str) -> dict:

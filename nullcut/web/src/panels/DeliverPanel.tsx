@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { api, errorMessage } from "../api/client";
-import type { Package } from "../api/types";
+import type { Package, Thumbnail } from "../api/types";
+import { FormatToggle, useFormatRenders } from "../components/FormatToggle";
 import { ErrorText } from "../components/ErrorText";
 import { JobProgress } from "../components/JobProgress";
 import { QcPanel } from "../components/QcPanel";
@@ -46,17 +47,70 @@ function CopyButton({ text, target }: { text: string; target: RefObject<HTMLText
   );
 }
 
-function PackageView({ pkg, mp4 }: { pkg: Package; mp4: string | null }) {
+function Check({ ok, label }: { ok: boolean; label: string }) {
+  return <span className={`tag ${ok ? "tag-ok" : "tag-bad"}`}>{label}</span>;
+}
+
+function ThumbnailsBlock({ thumbs }: { thumbs: Thumbnail[] }) {
+  return (
+    <section className="pkg-block thumbs-block" aria-labelledby="thumbs-h">
+      <h3 id="thumbs-h" className="section-title">
+        Thumbnails
+      </h3>
+      <ol className="thumbs">
+        {thumbs.map((t) => (
+          <li key={`${t.rank}:${t.url}`} className={`thumb-card ${t.checks.passed ? "" : "failed"}`}>
+            <img src={t.url} alt={`Thumbnail ${t.rank}: ${t.text}`} loading="lazy" />
+            <div className="thumb-head">
+              <span className="mono dim">#{t.rank}</span>
+              <span className="thumb-text">{t.text || <span className="dim">No text</span>}</span>
+              <span className="spacer" />
+              <span className={`tag ${t.checks.passed ? "tag-ok" : "tag-bad"}`}>{t.checks.passed ? "passed" : "failed"}</span>
+            </div>
+            <dl className="kv thumb-kv">
+              <dt>Layout</dt>
+              <dd className="mono">{t.layout}</dd>
+              <dt>Score</dt>
+              <dd className="mono">{t.score.toFixed(2)}</dd>
+              <dt>Frame</dt>
+              <dd className="mono">{tc(t.frame_t)}</dd>
+              <dt>Contrast</dt>
+              <dd>
+                <span className="mono">{t.checks.contrast_ratio.toFixed(1)}:1</span>{" "}
+                <Check ok={t.checks.contrast_ok} label={t.checks.contrast_ok ? "pass" : "fail"} />
+              </dd>
+              <dt>Face</dt>
+              <dd>
+                <span className="mono">{Math.round(t.checks.face_px)} px</span>{" "}
+                <Check ok={t.checks.face_ok} label={t.checks.face_ok ? "pass" : "fail"} />
+              </dd>
+              <dt>Corner</dt>
+              <dd>
+                <Check ok={t.checks.corner_clear} label={t.checks.corner_clear ? "clear" : "blocked"} />
+              </dd>
+            </dl>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function PackageView({ pkg, mp4, mp4Vertical }: { pkg: Package; mp4: string | null; mp4Vertical: string | null }) {
   const descRef = useRef<HTMLTextAreaElement>(null);
+  const thumbs = [...(pkg.thumbnails ?? [])].sort((a, b) => a.rank - b.rank);
   const files: [string, string | null][] = [
     ["MP4", mp4],
+    ["MP4 9:16", mp4Vertical],
     ["SRT", pkg.files.srt],
     ["VTT", pkg.files.vtt],
     ["OTIO", pkg.files.otio],
     ["FCPXML", pkg.files.fcpxml],
+    ...thumbs.map((t): [string, string] => [`PNG ${t.rank}`, t.url]),
   ];
   return (
     <div className="pkg-grid">
+      {thumbs.length > 0 && <ThumbnailsBlock thumbs={thumbs} />}
       <section className="pkg-block" aria-labelledby="titles-h">
         <h3 id="titles-h" className="section-title">
           Titles
@@ -137,12 +191,18 @@ function PackageView({ pkg, mp4 }: { pkg: Package; mp4: string | null }) {
 
 export function DeliverPanel({ ctx }: { ctx: ProjectContext }) {
   const { project, renders, jobs, onJobStarted } = ctx;
-  const master = renders.find((r) => r.kind === "master") ?? null;
+  const { render: master, formats, format, setFormat, current } = useFormatRenders(renders, "master");
   const [pkg, setPkg] = useState<Package | null>(null);
   const [pkgError, setPkgError] = useState<string | null>(null);
   const [startError, setStartError] = useState<string | null>(null);
 
   const masterJob = latestOfKind(jobs, "master");
+  // MP4 is the 16:9 master; "MP4 9:16" is files.mp4_vertical. A 9:16-only brief has no 16:9 master,
+  // so its render stands in for the vertical file if the package does not name one.
+  const landscape = current.find((r) => (r.format ?? "16:9") === "16:9") ?? null;
+  const portrait = current.find((r) => r.format === "9:16") ?? null;
+  const mp4 = landscape?.url ?? null;
+  const mp4Vertical = pkg?.files.mp4_vertical ?? (landscape ? null : portrait?.url ?? null);
   const rendering = isActive(masterJob);
 
   useEffect(() => {
@@ -180,10 +240,11 @@ export function DeliverPanel({ ctx }: { ctx: ProjectContext }) {
         </h2>
         {master && (
           <span className="mono dim">
-            master v{master.version} · {tc(master.duration_s)}
+            master v{master.version} · {master.format ?? "16:9"} · {tc(master.duration_s)}
           </span>
         )}
         <span className="spacer" />
+        <FormatToggle formats={formats} value={format} onChange={setFormat} />
         <button type="button" className="btn btn-primary" onClick={() => void start()} disabled={rendering}>
           {rendering ? "Rendering" : master ? "Re-render master" : "Render master"}
         </button>
@@ -195,21 +256,21 @@ export function DeliverPanel({ ctx }: { ctx: ProjectContext }) {
         <p className="empty">No master yet. The master renders at full quality and builds the publishing package.</p>
       ) : (
         <div className="player-grid">
-          <div className="player">
+          <div className={`player ${master.format === "9:16" ? "portrait" : ""}`}>
             <video
-              key={`${master.url}#${master.version}`}
+              key={`${master.url}#${master.version}#${master.format}`}
               src={versioned(master.url, master.version)}
               controls
               preload="metadata"
               playsInline
             />
           </div>
-          <QcPanel qc={master.qc} title={`QC · master v${master.version}`} />
+          <QcPanel qc={master.qc} title={`QC · master v${master.version} · ${master.format ?? "16:9"}`} />
         </div>
       )}
 
       <ErrorText error={pkgError && `Package: ${pkgError}`} />
-      {pkg && <PackageView pkg={pkg} mp4={master?.url ?? null} />}
+      {pkg && <PackageView pkg={pkg} mp4={mp4} mp4Vertical={mp4Vertical} />}
     </section>
   );
 }

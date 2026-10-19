@@ -99,3 +99,10 @@ export function humanise(key: string): string {
 export function versioned(url: string, version: number): string {
   return `${url}${url.includes("?") ? "&" : "?"}v=${version}`;
 }
+
+/** measured / wanted values from a MatchEntry. */
+export function matchValue(v: number | string | null | undefined): string {
+  if (v == null) return "–";
+  if (typeof v === "number") return paramValue(v);
+  return v;
+}

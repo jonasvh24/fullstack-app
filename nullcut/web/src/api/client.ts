@@ -1,5 +1,10 @@
 import type {
   Brief,
+  CompareRow,
+  ExtractBody,
+  ThumbnailProfile,
+  TryBody,
+  TryRender,
   CreateProjectBody,
   CreateProjectResponse,
   Health,
@@ -119,4 +124,14 @@ export const api = {
   getPackage: (id: string) => orNull(request<Package>("GET", `/api/projects/${enc(id)}/package`)),
 
   getJob: (jobId: string) => request<Job>("GET", `/api/jobs/${enc(jobId)}`),
+
+  // Phase 2
+  extractStyle: (body: ExtractBody) => request<Job>("POST", "/api/styles/extract", body),
+  deleteStyle: (id: string) => request<{ deleted: string }>("DELETE", `/api/styles/${enc(id)}`),
+  compareStyles: (ids: string[]) =>
+    request<CompareRow[]>("GET", `/api/styles/compare?ids=${ids.map(enc).join(",")}`),
+  thumbnailProfiles: () => request<ThumbnailProfile[]>("GET", "/api/thumbnail-profiles"),
+  extractThumbnailProfile: (body: ExtractBody) => request<Job>("POST", "/api/thumbnail-profiles/extract", body),
+  startTry: (id: string, body: TryBody) => request<Job>("POST", `/api/projects/${enc(id)}/try`, body),
+  getTry: (id: string) => request<TryRender[]>("GET", `/api/projects/${enc(id)}/try`),
 };

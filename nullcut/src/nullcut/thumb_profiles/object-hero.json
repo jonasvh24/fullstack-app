@@ -1,0 +1,5 @@
+{"id": "object-hero", "name": "Object hero plus arrow",
+ "description": "The subject large and centred on a graded colour field, a short label and an arrow pointing at it.",
+ "layout": "hero-arrow", "face_share": 0.45, "face_x": 0.55, "words": 2, "text_height": 0.14,
+ "text_colour": "#FFFFFF", "accent": "#FF3B30", "outline": true, "cutout": true,
+ "background": "colour-field", "saturation": 1.3, "contrast": 1.1, "arrow": true}

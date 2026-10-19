@@ -42,23 +42,29 @@ def sfx_sample(kind: str) -> np.ndarray:
     return (out / max(1e-6, np.abs(out).max()) * 0.5).astype(np.float32)
 
 
-def write_cube(path: Path, colour: dict, size: int = 33) -> Path:
-    """A 3D LUT from the style's colour parameters; FFmpeg applies it with lut3d."""
-    if path.exists():
-        return path
+def grade(rgb: np.ndarray, colour: dict) -> np.ndarray:
+    """The style grade on RGB in 0..1. The LUT is this function sampled on a grid, and the
+    match score applies it to source frames to know exactly what the output should be."""
     sat = float(colour.get("saturation", 1.0))
     con = float(colour.get("contrast", 1.0))
     warm = float(colour.get("warmth", 0.0))
     lift = float(colour.get("lift", 0.0))
+    luma = (rgb * [0.2126, 0.7152, 0.0722]).sum(-1, keepdims=True)
+    out = luma + (rgb - luma) * sat
+    out = (out - 0.5) * con + 0.5
+    out = out + np.array([warm, warm * 0.3, -warm])  # warm: up red, down blue
+    out = lift + out * (1 - lift)
+    return np.clip(out, 0, 1)
+
+
+def write_cube(path: Path, colour: dict, size: int = 33) -> Path:
+    """A 3D LUT from the style's colour parameters; FFmpeg applies it with lut3d."""
+    if path.exists():
+        return path
     g = np.linspace(0, 1, size, dtype=np.float64)
     # .cube order: red varies fastest, then green, then blue.
     b, gg, r = np.meshgrid(g, g, g, indexing="ij")
-    rgb = np.stack([r, gg, b], axis=-1)
-    luma = (rgb * [0.2126, 0.7152, 0.0722]).sum(-1, keepdims=True)
-    rgb = luma + (rgb - luma) * sat
-    rgb = (rgb - 0.5) * con + 0.5
-    rgb = rgb + np.array([warm, warm * 0.3, -warm])  # warm: up red, down blue
-    rgb = lift + rgb * (1 - lift)
+    rgb = grade(np.stack([r, gg, b], axis=-1), colour)
     rgb = np.clip(rgb, 0, 1).reshape(-1, 3)
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"LUT_3D_SIZE {size}", "DOMAIN_MIN 0 0 0", "DOMAIN_MAX 1 1 1"]
@@ -71,3 +77,65 @@ def is_identity(colour: dict) -> bool:
     return (abs(colour.get("saturation", 1) - 1) < 1e-3
             and abs(colour.get("contrast", 1) - 1) < 1e-3
             and abs(colour.get("warmth", 0)) < 1e-3 and abs(colour.get("lift", 0)) < 1e-3)
+
+
+def colour_transfer(target: dict, source: dict) -> dict:
+    """LUT parameters that move footage with `source` statistics towards `target`.
+
+    A first-order fit (plan §5: "fitted colour transfer"): ratios for
+    saturation and contrast, offsets for warmth and lift, bounded so a
+    strange reference cannot push the grade into caricature.
+    """
+    sat = target["saturation"] / max(source["saturation"], 1e-3)
+    con = target["contrast"] / max(source["contrast"], 1e-3)
+    # Bounded: a reference far from this footage gets a firm grade, never a caricature.
+    return {"saturation": round(float(np.clip(sat, 0.7, 1.35)), 3),
+            "contrast": round(float(np.clip(con, 0.85, 1.25)), 3),
+            # grade() moves R-B by twice the warmth parameter.
+            "warmth": round(float(np.clip((target["warmth"] - source["warmth"]) / 2,
+                                          -0.08, 0.08)), 3),
+            "lift": round(float(np.clip((target["lift"] - source["lift"])
+                                        / max(1 - source["lift"], 0.5), -0.03, 0.05)), 3)}
+
+
+def _keyframes(project, index: dict) -> list:
+    import cv2
+
+    frames = []
+    for c in index["clips"]:
+        kfs = list((c.get("keyframes") or {}).values())
+        for rel in kfs[:: max(1, len(kfs) // 8)][:8]:
+            img = cv2.imread(str(project.path(rel)))
+            if img is not None:
+                frames.append(img)
+    return frames
+
+
+def footage_colour(project, index: dict) -> dict | None:
+    """Colour statistics of the project's footage, from its keyframes (cached)."""
+    import json
+
+    from . import measure
+
+    cache = project.path("index", "colour.json")
+    if cache.exists():
+        return json.loads(cache.read_text())
+    frames = _keyframes(project, index)
+    if not frames:
+        return None
+    stats = measure.colour_stats(frames)
+    cache.write_text(json.dumps(stats))
+    return stats
+
+
+def graded_colour(project, index: dict, colour: dict) -> dict | None:
+    """What the output's colour statistics should be: the same keyframes, graded by the
+    same function, measured by the same code."""
+    from . import measure
+
+    frames = _keyframes(project, index)
+    if not frames:
+        return None
+    graded = [(grade(f[..., ::-1].astype(np.float64) / 255, colour)[..., ::-1] * 255)
+              .astype(np.uint8) for f in frames]
+    return measure.colour_stats(graded)

@@ -1,7 +1,9 @@
 // Types copied from docs/api.md (Phase 1). Keep in sync with the contract.
 
 export type JobStatus = "queued" | "running" | "done" | "failed";
-export type JobKind = "ingest" | "plan" | "preview" | "master" | "music_import";
+// Phase 2 does not name the kinds of its new jobs (style/thumbnail extraction, try);
+// any other string is accepted and labelled generically.
+export type JobKind = "ingest" | "plan" | "preview" | "master" | "music_import" | (string & {});
 
 export interface Job {
   id: string;
@@ -46,15 +48,20 @@ export type MusicMode = "none" | "library" | "track";
 export type Energy = "low" | "mid" | "high";
 export type CaptionMode = "off" | "clean" | "word";
 
+export type Format = "16:9" | "9:16";
+export type BriefFormat = Format | "both";
+
 export interface Brief {
   text: string;
   target_s: number | null; // 15..1800
   tolerance: number; // default 0.05
-  format: "16:9"; // 9:16 arrives in Phase 2
+  format: BriefFormat; // Phase 2: 9:16 and both enabled
   style: string; // style id from /api/styles
   music: { mode: MusicMode; mood: string; energy: Energy; track_id: string | null };
   captions: { mode: CaptionMode };
   extras: { zoom: number; broll: number; hook_required: boolean }; // 0..2 multipliers, 1 = style default
+  thumbnail_profile: string; // Phase 2: id from /api/thumbnail-profiles
+  title_refs: string; // Phase 2: reference titles, one per line (may be empty)
 }
 
 export type BeatRole = "hook" | "setup" | "body" | "payoff" | "cta";
@@ -123,6 +130,14 @@ export interface TimelineSummary {
   music: TimelineMusic | null;
 }
 
+/** Phase 2. score 0..1; note names the rule that missed when score < 0.8, else "". */
+export interface MatchEntry {
+  score: number;
+  measured: number | string | null;
+  wanted: number | string | null;
+  note: string;
+}
+
 export interface Qc {
   length_ok: boolean | null;
   loudness_lufs: number | null;
@@ -130,6 +145,8 @@ export interface Qc {
   cuts_clean: boolean;
   worst_cut_db: number | null;
   style_match: Record<string, number>;
+  style_detail?: Record<string, MatchEntry>; // Phase 2, measured on the rendered file
+  style_overall?: number; // Phase 2, 0..1, mean of style_match
 }
 
 export interface Render {
@@ -137,14 +154,42 @@ export interface Render {
   version: number;
   url: string;
   duration_s: number;
+  format: Format; // Phase 2
   qc: Qc;
+}
+
+export interface TryRender {
+  style: string;
+  style_name: string;
+  url: string;
+  duration_s: number;
+  match: Record<string, MatchEntry>;
+  overall: number;
+}
+
+export interface Thumbnail {
+  url: string;
+  rank: number;
+  score: number;
+  text: string;
+  layout: string;
+  frame_t: number; // seconds into the master the face came from
+  checks: {
+    contrast_ratio: number;
+    contrast_ok: boolean;
+    face_px: number;
+    face_ok: boolean;
+    corner_clear: boolean;
+    passed: boolean;
+  };
 }
 
 export interface Package {
   titles: { text: string; rationale: string; verified: boolean }[];
   description: string;
   chapters: { t: number; title: string }[];
-  files: { srt: string; vtt: string; otio: string; fcpxml: string | null }; // /media URLs
+  thumbnails: Thumbnail[]; // Phase 2: three, ranked
+  files: { mp4_vertical: string | null; srt: string; vtt: string; otio: string; fcpxml: string | null }; // /media URLs
 }
 
 export interface Style {
@@ -153,6 +198,26 @@ export interface Style {
   description: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   params: Record<string, any>;
+  kind: "shipped" | "extracted"; // Phase 2
+  sources: string[]; // Phase 2: reference file names, extracted styles only
+}
+
+export interface ThumbnailProfile {
+  id: string;
+  name: string;
+  description: string;
+  kind: "shipped" | "extracted";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  params: Record<string, any>;
+}
+
+export interface CompareRow {
+  key: string;
+  label: string;
+  unit: string;
+  min: number;
+  max: number;
+  values: Record<string, number | null>; // style id -> value
 }
 
 export interface Track {
@@ -217,4 +282,18 @@ export interface PlanEditBody {
 export interface MasterResult {
   render: Render;
   package: Package;
+}
+
+export interface ExtractBody {
+  name: string;
+  folder: string;
+}
+
+export interface TryBody {
+  styles: string[]; // 2..4
+  seconds?: number;
+}
+
+export interface TryResult {
+  renders: TryRender[];
 }

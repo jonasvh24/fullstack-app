@@ -3,6 +3,7 @@ import { api, errorMessage } from "../api/client";
 import type { Clip, TimelineSummary } from "../api/types";
 import { ErrorText } from "../components/ErrorText";
 import { JobProgress } from "../components/JobProgress";
+import { FormatToggle, useFormatRenders } from "../components/FormatToggle";
 import { QcPanel } from "../components/QcPanel";
 import { fps, tc, versioned } from "../lib/format";
 import { isActive, latestOfKind } from "../lib/jobs";
@@ -13,7 +14,7 @@ import { TimelineCanvas } from "./TimelineCanvas";
 export function PreviewPanel({ ctx }: { ctx: ProjectContext }) {
   const { project, renders, jobs, onJobStarted } = ctx;
   const pid = encodeURIComponent(project.id);
-  const preview = renders.find((r) => r.kind === "preview") ?? null;
+  const { render: preview, formats, format, setFormat } = useFormatRenders(renders, "preview");
   const [video, setVideo] = useState<HTMLVideoElement | null>(null);
   const [timeline, setTimeline] = useState<TimelineSummary | null>(null);
   const [tlState, setTlState] = useState<"loading" | "ready" | "missing" | "error">("loading");
@@ -61,11 +62,12 @@ export function PreviewPanel({ ctx }: { ctx: ProjectContext }) {
         </h2>
         {preview && (
           <span className="mono dim">
-            v{preview.version} · {tc(preview.duration_s)}
-            {timeline && ` · ${timeline.width}×${timeline.height}@${fps(timeline.fps)}`}
+            v{preview.version} · {preview.format ?? "16:9"} · {tc(preview.duration_s)}
+            {timeline && preview.format !== "9:16" && ` · ${timeline.width}×${timeline.height}@${fps(timeline.fps)}`}
           </span>
         )}
         <span className="spacer" />
+        <FormatToggle formats={formats} value={format} onChange={setFormat} />
         <button type="button" className="btn" onClick={() => void rerender()} disabled={rendering}>
           {rendering ? "Rendering" : "Re-render preview"}
         </button>
@@ -82,9 +84,9 @@ export function PreviewPanel({ ctx }: { ctx: ProjectContext }) {
         </p>
       ) : (
         <div className="player-grid">
-          <div className="player">
+          <div className={`player ${preview.format === "9:16" ? "portrait" : ""}`}>
             <video
-              key={`${preview.url}#${preview.version}`}
+              key={`${preview.url}#${preview.version}#${preview.format}`}
               ref={setVideo}
               src={versioned(preview.url, preview.version)}
               controls
@@ -92,7 +94,7 @@ export function PreviewPanel({ ctx }: { ctx: ProjectContext }) {
               playsInline
             />
           </div>
-          <QcPanel qc={preview.qc} title={`QC · preview v${preview.version}`} />
+          <QcPanel qc={preview.qc} title={`QC · preview v${preview.version} · ${preview.format ?? "16:9"}`} />
         </div>
       )}
 

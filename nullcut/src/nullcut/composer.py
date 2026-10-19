@@ -21,6 +21,8 @@ import re
 from copy import deepcopy
 from dataclasses import dataclass, field
 
+import numpy as np
+
 from . import compiler, music, plan as plan_mod, styles
 from .compiler import Item, contiguous
 
@@ -41,6 +43,7 @@ class Composition:
     captions: dict = field(default_factory=dict)
     colour: dict = field(default_factory=dict)
     report: dict = field(default_factory=dict)
+    reframe: list = field(default_factory=list)
 
 
 def _tok(w: str) -> str:
@@ -133,6 +136,10 @@ def snap_to_beats(items: list[Item], beats_from_end: list[float], index: dict,
 def _subject_centre(clip: dict, src_t: float) -> tuple[float, float]:
     faces = [f for f in clip.get("faces", []) if abs(f[0] - src_t) <= 1.0]
     if not faces:
+        moving = [m for m in clip.get("motion", []) if abs(m[0] - src_t) <= 1.0]
+        if moving:  # a screen recording: zoom where the action is
+            m = min(moving, key=lambda m: abs(m[0] - src_t))
+            return round(m[1], 4), round(m[2], 4)
         return 0.5, 0.45
     f = min(faces, key=lambda f: abs(f[0] - src_t))
     _, x, y, w, h, _ = f
@@ -172,6 +179,7 @@ def place_zoom(layout: _Layout, clips: dict, word: dict, z: dict, scale: float,
     k = layout.item_at(word["s"])
     a_item, b_item = layout.item_bounds(k)
     start = max(word["s"] - z["ease_s"], a_item + ITEM_EDGE_GUARD_S)
+    # The hold shrinks to fit a short item (down to 0.3 s) before the zoom is given up.
     end = min(start + 2 * z["ease_s"] + z["hold_s"], b_item - 0.05)
     if end - start < z["ease_s"] * 2 + 0.3 or not layout.free(start, end):
         return None
@@ -217,6 +225,37 @@ def place_broll(layout: _Layout, pool: list[dict], used: dict, a: float, length:
     return {"start_s": round(a, 3), "end_s": round(b, 3), "clip_id": best["clip_id"],
             "shot_id": best["id"], "src_in": round(src_in, 3),
             "rule": rule + (f" (matches: {', '.join(matched)})" if matched else "")}
+
+
+REFRAME_STEP_S = 0.5
+REFRAME_DEAD_ZONE = 0.04   # small head moves never move the frame
+REFRAME_EASE = 0.35        # per step: the window follows, it does not snap
+
+
+def subject_track(clip: dict, src_in: float, duration: float) -> list[list[float]]:
+    """Horizontal subject centre over an item, smoothed for a 9:16 crop: [[t_local, cx], ...].
+
+    Faces first; a screen recording with no face follows the region that moves.
+    """
+    samples = clip.get("faces") or []
+    points = [(f[0], f[1] + f[3] / 2) for f in samples]
+    if not points:
+        points = [(m[0], m[1]) for m in clip.get("motion", [])]
+    track, cx = [], None
+    t = 0.0
+    while True:
+        src_t = src_in + t
+        near = [c for st, c in points if abs(st - src_t) <= 1.0]
+        target = float(np.median(near)) if near else (cx if cx is not None else 0.5)
+        if cx is None:
+            cx = target
+        elif abs(target - cx) > REFRAME_DEAD_ZONE:
+            cx = cx + REFRAME_EASE * (target - cx)
+        track.append([round(t, 3), round(cx, 4)])
+        if t >= duration:
+            break
+        t = min(duration, t + REFRAME_STEP_S)
+    return track
 
 
 def compose(index: dict, plan_doc: dict, brief: dict, fps: float,
@@ -361,7 +400,8 @@ def compose(index: dict, plan_doc: dict, brief: dict, fps: float,
         window = [w for w in words if a + 0.5 <= w["s"] <= a + max_static]
         rule = f"pattern interrupt: {b - a:.1f} s static"
         placed = None
-        for w in [w for w in window if w["emph"]]:
+        zooms_allowed = z["per_minute"] > 0  # a style that never zooms never zooms
+        for w in [w for w in window if w["emph"]] if zooms_allowed else []:
             placed = place_zoom(layout, clips, w, z, z["scale_max"], rule)
             if placed:
                 zooms.append(placed)
@@ -371,8 +411,8 @@ def compose(index: dict, plan_doc: dict, brief: dict, fps: float,
                                  words, rule)
             if placed:
                 broll.append(placed)
-        if not placed:
-            # No emphasis word, no B-roll left: punch on any word (graphics arrive in Phase 2).
+        if not placed and zooms_allowed:
+            # No emphasis word, no B-roll left: punch on any word (no graphics templates yet).
             for w in reversed(window):
                 placed = place_zoom(layout, clips, w, z, z["scale_min"], rule + ", no B-roll left")
                 if placed:
@@ -413,5 +453,8 @@ def compose(index: dict, plan_doc: dict, brief: dict, fps: float,
         "sfx": len(sfx), "beat_snaps": snapped, "music": track["name"] if track else None,
         "max_static_s": max_static,
     }
-    return Composition(items, beats_out, zooms, broll, music_doc, sfx, cap,
+    reframe = [subject_track(clips[it.clip_id], it.src_in, it.frames / fps) for it in items]
+    comp = Composition(items, beats_out, zooms, broll, music_doc, sfx, cap,
                        style["colour"], report)
+    comp.reframe = reframe
+    return comp

@@ -49,12 +49,20 @@ REGISTRY = {m.name: m for m in (
               "face_detection_yunet/face_detection_yunet_2023mar.onnx",
           directory="yunet-2023mar", files=("face_detection_yunet_2023mar.onnx",),
           size_mb=1, archive=False),
+    Model("isnet-general-use", "cutout", "Apache-2.0", True,
+          "IS-Net (DIS) salient-object segmentation, ONNX from the rembg release; "
+          "cuts the subject out for thumbnails. GrabCut is the fallback",
+          url="https://github.com/danielgatis/rembg/releases/download/v0.0.0/"
+              "isnet-general-use.onnx",
+          directory="isnet-general-use", files=("isnet-general-use.onnx",),
+          size_mb=171, archive=False),
     Model("whisper-large-v3", "asr", "MIT", True,
           "faster-whisper / WhisperX; downloaded from Hugging Face by the library"),
 )}
 
 # What runs when nothing else is configured. Commercial licences only.
-DEFAULT_PROFILE = {"asr": "parakeet-tdt-0.6b-v3", "faces": "yunet-2023mar"}
+DEFAULT_PROFILE = {"asr": "parakeet-tdt-0.6b-v3", "faces": "yunet-2023mar",
+                   "cutout": "isnet-general-use"}
 
 
 def models_dir() -> Path:

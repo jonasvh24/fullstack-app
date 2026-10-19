@@ -1,0 +1,5 @@
+{"id": "reaction-face", "name": "Reaction face plus text",
+ "description": "Big expressive face on one side, two to four bold words on the other, background blurred and darkened.",
+ "layout": "face-side", "face_share": 0.62, "face_x": 0.30, "words": 3, "text_height": 0.16,
+ "text_colour": "#FFFFFF", "accent": "#FFD400", "outline": true, "cutout": true,
+ "background": "blur-dark", "saturation": 1.25, "contrast": 1.15, "arrow": false}

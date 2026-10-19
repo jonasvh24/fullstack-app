@@ -301,6 +301,40 @@ def cmd_music(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_styles(args: argparse.Namespace) -> int:
+    from . import style_engine, styles
+
+    if args.action == "extract":
+        if not (args.name and args.folder):
+            raise SystemExit("usage: nullcut styles extract NAME FOLDER")
+        prof = style_engine.extract(args.name, Path(args.folder).expanduser())
+        print(f"style {prof['id']} from {len(prof['sources'])} references "
+              f"(closest shipped: {prof['inherited_from']})")
+        return 0
+    if args.action == "compare":
+        ids = [args.name] + ([args.folder] if args.folder else [])
+        for row in style_engine.compare(ids):
+            vals = "  ".join(f"{k}={'-' if v is None else v}" for k, v in row["values"].items())
+            print(f"  {row['label']:<20} {vals}  ({row['unit']})")
+        return 0
+    for st in styles.all_styles().values():
+        print(f"  {st['id']:<18} {st.get('kind', 'shipped'):<9} {st['description'][:70]}")
+    return 0
+
+
+def cmd_try(args: argparse.Namespace) -> int:
+    from . import pipeline
+
+    project = proj.resolve(config.nullcut_home(args.home), args.project)
+    out = pipeline.try_styles(project, args.styles, args.seconds, _progress)
+    sys.stderr.write("\n")
+    for r in out["renders"]:
+        weak = ", ".join(f"{k} {d['score']:.0%}" for k, d in r["match"].items() if d["note"])
+        print(f"  {r['style']:<16} {r['overall']:.0%}  {project.path(r['path'])}"
+              + (f"  (under 80 %: {weak})" if weak else ""))
+    return 0
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     from . import server
 
@@ -372,6 +406,18 @@ def build_parser() -> argparse.ArgumentParser:
     mu.add_argument("action", nargs="?", choices=("list", "import"), default="list")
     mu.add_argument("folder", nargs="?")
     mu.set_defaults(func=cmd_music)
+
+    st = sub.add_parser("styles", help="list, extract or compare style profiles")
+    st.add_argument("action", nargs="?", choices=("list", "extract", "compare"), default="list")
+    st.add_argument("name", nargs="?", help="extract: profile name; compare: first style id")
+    st.add_argument("folder", nargs="?", help="extract: reference folder; compare: second id")
+    st.set_defaults(func=cmd_styles)
+
+    tr = sub.add_parser("try", help="first 60 s of the edit in 2-4 styles, measured")
+    tr.add_argument("styles", nargs="+")
+    tr.add_argument("--project")
+    tr.add_argument("--seconds", type=float, default=60.0)
+    tr.set_defaults(func=cmd_try)
 
     sv = sub.add_parser("serve", help="the local web UI and API")
     sv.add_argument("--host", default="127.0.0.1")
