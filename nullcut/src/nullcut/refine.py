@@ -264,10 +264,14 @@ def _tweak_zoom(ctx: Ctx, t: str) -> list[dict] | None:
     cur = ctx.get("zoom.per_minute")
     if d == "none":
         return [_change(ctx, "zoom.per_minute", "set", 0)]
+    # The static-stretch rule fills long holds with zooms; it moves with the rate, or
+    # "less zoom" would be undone by pattern interrupts.
     if d == "less":
-        return [_change(ctx, "zoom.per_minute", "set", round(cur * 0.5, 1))]
+        return [_change(ctx, "zoom.per_minute", "set", round(cur * 0.5, 1)),
+                _change(ctx, "pacing.max_static_s", "scale", 1.5)]
     if d == "more":
-        return [_change(ctx, "zoom.per_minute", "set", round(cur * 1.5, 1) if cur else 2.0)]
+        return [_change(ctx, "zoom.per_minute", "set", round(cur * 1.5, 1) if cur else 2.0),
+                _change(ctx, "pacing.max_static_s", "scale", 0.8)]
     return None
 
 

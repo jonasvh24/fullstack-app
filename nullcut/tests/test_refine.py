@@ -34,7 +34,8 @@ def texts(project, doc=None):
 
 def test_tweaks_resolve_to_absolute_values_without_an_llm(planned):
     p = planned
-    assert changes(p, "less zoom") == {"zoom.per_minute": 5.0}            # retention-max: 10/min
+    assert changes(p, "less zoom") == {"zoom.per_minute": 5.0,           # retention-max: 10/min
+                                       "pacing.max_static_s": 4.5}
     assert changes(p, "no b-roll") == {"broll.density": 0.0}
     assert changes(p, "music quieter") == {"music.under_speech_db": -24,
                                            "music.gap_db": -14}
@@ -51,8 +52,9 @@ def test_tweaks_resolve_to_absolute_values_without_an_llm(planned):
     hook = changes(p, "punchier first 5 seconds")
     assert hook["pacing.hook_silence_ms"] < 150 and hook["hook.max_s"] == 5
     assert set(changes(p, "less zoom and no sound effects")) == {
-        "zoom.per_minute", "sfx.cut_share", "sfx.zoom_share"}
+        "zoom.per_minute", "pacing.max_static_s", "sfx.cut_share", "sfx.zoom_share"}
     assert changes(p, "minder zoom en geen muziek") == {"zoom.per_minute": 5.0,
+                                                        "pacing.max_static_s": 4.5,
                                                         "brief.music.mode": "none"}
 
 

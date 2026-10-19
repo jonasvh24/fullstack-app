@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
+from typing import Callable
 
 from . import config
 
@@ -79,6 +80,32 @@ def min_cut_gap_s() -> float:
     return config.HANDLE_PRE_S + config.HANDLE_POST_S + 0.05
 
 
+GAP_VOICED_DB = 18.0   # a "pause" this close to the speech level has a voice in it
+
+
+def _gap_voiced(clip: dict) -> Callable[[float, float], bool]:
+    """Whether a transcript gap holds sound at speech level: a word the recogniser missed
+    or mangled. Judged on the 100 ms energy envelope, so only gaps holding a whole hop
+    clear of the neighbouring words can be judged; shorter ones are trusted."""
+    env = clip.get("energy") or {}
+    rms, hop = env.get("rms_db") or [], env.get("hop", 0.1)
+    if not rms or not clip["words"]:
+        return lambda a, b: False
+    import numpy as np
+
+    arr = np.array(rms)
+    spoken = [arr[int(w["s"] / hop):max(int(w["s"] / hop) + 1, int(w["e"] / hop))]
+              for w in clip["words"]]
+    spoken = np.concatenate([s for s in spoken if len(s)]) if spoken else arr
+    level = float(np.percentile(spoken, 90)) if len(spoken) else float(arr.max())
+
+    def voiced(a: float, b: float) -> bool:
+        lo, hi = int(np.ceil((a + 0.04) / hop)), int((b - 0.04) / hop)   # hops wholly inside
+        return hi > lo and float(arr[lo:hi].max()) > level - GAP_VOICED_DB
+
+    return voiced
+
+
 def clip_spans(clip: dict, silence_s: float, remove_fillers: bool) -> tuple[list[Item], dict]:
     """Split each segment's kept words into spans at long gaps and removed fillers."""
     words, segments = clip["words"], clip["segments"]
@@ -93,6 +120,7 @@ def clip_spans(clip: dict, silence_s: float, remove_fillers: bool) -> tuple[list
 
     # A cut needs real material to remove, or it is just a visible jump.
     min_cut_gap = max(silence_s, min_cut_gap_s())
+    voiced = _gap_voiced(clip)
     raw: list[tuple[str, list[int], list[str]]] = []  # (segment, word indices, fillers)
     for seg in segments:
         current: list[int] = []
@@ -103,8 +131,11 @@ def clip_spans(clip: dict, silence_s: float, remove_fillers: bool) -> tuple[list
                 removed_between.append(i)
                 continue
             if current:
-                gap = words[i]["s"] - words[current[-1]]["e"]
-                if removed_between or gap > min_cut_gap:
+                prev_e = words[current[-1]]["e"]
+                gap = words[i]["s"] - prev_e
+                # A gap the audio says is spoken is not a pause: no cut through it.
+                if removed_between or (gap > min_cut_gap
+                                        and not voiced(prev_e, words[i]["s"])):
                     raw.append((seg["id"], current, pending))
                     current, pending = [], []
             pending.extend(reasons[j] for j in removed_between)

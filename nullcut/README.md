@@ -91,7 +91,32 @@ Rules cover the common phrasings in English and Dutch. What they cannot map goes
 
 ## Gate 3
 
-Results of `scripts/gate3.py` on a 10-minute edit follow in the next commit.
+`scripts/gate3.py` builds 12 minutes of synthesised talking head, plans a 9:46 edit (227 items, Retention max, word captions, music bed), renders the preview, then times each chat instruction from submission to a playable preview. Then it renders the master and checks the FCPXML. 4 CPU cores, libx264, no GPU.
+
+| Instruction | Kind | Items re-encoded | Preview in |
+|---|---|---|---|
+| music quieter | tweak, audio only | 0 / 227 | 28.0 s |
+| no sound effects | tweak, audio only | 0 / 227 | 28.3 s |
+| generate the music | tweak, audio only | 0 / 220 | 27.1 s |
+| less zoom | tweak | 45 / 227 | 34.5 s ¹ |
+| make it 9:00 | tweak, re-solved | 15 / 222 | 31.2 s |
+| punchier | tweak, re-solved | 92 / 227 | 61.1 s |
+| warmer | tweak, every frame | 227 / 227 | 101.1 s |
+| bigger captions | tweak, every frame | 227 / 227 | 103.9 s |
+| drop "…" (a quoted sentence) | structural | 2 / 226 | 28.5 s |
+| bring back "…" | structural | 2 / 220 | 27.1 s |
+| open on "…" instead | structural | 13 / 220 | 32.8 s |
+| undo | undo | 1 / 227 | 4.6 s |
+
+¹ In this run "less zoom" halved the zoom rate, but the static-stretch rule put most zooms back (13.5 a minute before, 14.8 after). It now also lengthens the longest allowed static stretch by half: 13.5, then 5.4, then 2.8 zooms a minute on the same edit. Timing not re-run after that change.
+
+Cold preview of the whole edit: 114 s (design target: under 2 minutes). Master: 19 minutes at source resolution on the same 4 cores.
+
+**FCPXML: passes.** 221 cuts, 9 connected clips, valid against Apple's FCPXML 1.8 DTD, every clip length exact, read back by the OTIO FCPXML reader with the same cut (that reader drops a frame from 16 clips through its own float truncation; the check allows for it and says so).
+
+**Gate 1 cut check, on this footage: 2 of 194 cuts land in speech.** The speech recogniser, hearing synthesised voice, drops or mangles words and leaves gaps that are not pauses; the first run cut 21 of them mid-word. The compiler now checks the audio before cutting a gap (a "pause" within 18 dB of the clip's speech level holds a voice), which removed 19. The last 2 are in-points landing on the tail of a word the recogniser never heard; a 10 ms energy envelope at analysis would catch them, at the price of re-analysing every clip. `[MED]` on real voices, which the recogniser hears better.
+
+**Gate 3 fails on this machine.** The 30 s target is for the reference build. Here, what touches only sound or part of the picture lands at 27–35 s; what touches every frame (a grade, the caption style) re-encodes all 227 items and takes 100 s. Where the time goes now: about 20 s of each audio change is the 10-minute mix (5 s), its loudness (3 s) and its AAC encode (10 s); each re-encoded item costs about 0.45 s of the four cores. On the Sparks the item encodes move to NVENC and 20 cores: likely under 30 s for partial tweaks and near it for full-frame ones `[LOW]`. The cheapest test is this script on one Spark.
 
 ## Pipeline
 
