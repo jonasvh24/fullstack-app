@@ -51,6 +51,11 @@ class Clock:
     def frames(self, seconds: float) -> int:
         return round(Fraction(seconds).limit_denominator(1_000_000) * self.rate)
 
+    def frames_up(self, seconds: float) -> int:
+        """Whole frames covering `seconds`: media ends part-way through its last frame."""
+        import math
+        return math.ceil(Fraction(seconds).limit_denominator(1_000_000) * self.rate - 1e-6)
+
     def t(self, frames: int) -> str:
         v = Fraction(frames) * self.frame
         if v == 0:
@@ -174,7 +179,7 @@ def build_fcpxml(project: Project, meta: dict, items: list[Item], name: str,
         tc = _timecode_start(path, src_fps) if video else 0.0
         attrs = {"id": new_id(), "name": path.name, "src": path.resolve().as_uri(),
                  "start": _fmt_t(Fraction(clock.frames(tc)) * clock.frame),
-                 "duration": clock.t(clock.frames(duration_s)),
+                 "duration": clock.t(clock.frames_up(duration_s)),
                  "hasVideo": "1" if video else "0", "hasAudio": "1" if has_audio else "0"}
         if video:
             fkey = (src_fps, width, height)
@@ -355,7 +360,7 @@ def check_fcpxml(path: Path, timeline_path: Path) -> dict:
             errors.append(f"{clip.get('name')}: ref {clip.get('ref')} does not resolve")
             continue
         a_start, a_dur = parse_time(ref.get("start")), parse_time(ref.get("duration"))
-        if start < a_start or start + dur > a_start + a_dur + fd:
+        if start < a_start or start + dur > a_start + a_dur:
             errors.append(f"{clip.get('name')}: source range outside its media")
         for child in clip:
             if child.tag == "asset-clip":
@@ -372,7 +377,7 @@ def check_fcpxml(path: Path, timeline_path: Path) -> dict:
                 else:
                     cs, cd = parse_time(child.get("start")), parse_time(child.get("duration"))
                     if cs < parse_time(cref.get("start")) or cs + cd > \
-                            parse_time(cref.get("start")) + parse_time(cref.get("duration")) + fd:
+                            parse_time(cref.get("start")) + parse_time(cref.get("duration")):
                         errors.append(f"{child.get('name')}: source range outside its media")
             elif child.tag == "marker":
                 ms = parse_time(child.get("start"))
@@ -392,9 +397,14 @@ def check_fcpxml(path: Path, timeline_path: Path) -> dict:
         elif not Path(unquote(urlparse(src).path)).exists():
             warnings.append(f"asset {a.get('name')}: media not found at {src}")
 
-    # The same cut, read back by an independent implementation.
+    # Every cut, exactly: the spine's clip lengths against the timeline's items.
     meta, items = timeline.load(timeline_path)
     fps = meta["fps"]
+    exact = [round(parse_time(c.get("duration")) / fd) for c in spine]
+    if exact != [it.frames for it in items]:
+        errors.append("spine clip lengths differ from the timeline")
+
+    # The same cut, read back by an independent implementation.
     roundtrip = {"read": False}
     try:
         import opentimelineio as otio
@@ -406,10 +416,14 @@ def check_fcpxml(path: Path, timeline_path: Path) -> dict:
         got = [round(c.source_range.duration.to_frames()) for c in by_lane["0"].find_clips()]
         want = [it.frames for it in items]
         broll = len(by_lane["1"].find_clips()) if "1" in by_lane else 0
+        # That reader converts "58/25s" with float division and int(): 57.999... becomes 57.
+        # A one-frame shortfall is its rounding; anything more is ours.
+        off = [w - g for g, w in zip(got, want)]
         roundtrip = {"read": True, "clips": len(got), "expected": len(want),
-                     "durations_match": got == want, "lanes": sorted(by_lane),
+                     "durations_match": len(got) == len(want) and all(d in (0, 1) for d in off),
+                     "reader_truncated": sum(d == 1 for d in off), "lanes": sorted(by_lane),
                      "broll": broll, "broll_expected": len(meta.get("broll", []))}
-        if got != want:
+        if not roundtrip["durations_match"]:
             errors.append(f"read back {len(got)} cut clips with different lengths than the "
                           f"{len(want)} in the timeline")
         if broll != len(meta.get("broll", [])):
