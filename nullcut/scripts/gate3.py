@@ -11,7 +11,9 @@ Gate 3 passes when every parameter tweak reaches its preview in under 30 s and t
 FCPXML passes every check. The 30 s target is for the reference build (DGX Spark,
 NVENC); this harness reports what the machine it runs on achieves.
 
-    NULLCUT_MODELS=... python scripts/gate3.py WORKDIR FACE.jpg [FCPXMLv1_8.dtd]
+    NULLCUT_MODELS=... python scripts/gate3.py WORKDIR FACE.jpg [FCPXMLv1_8.dtd] [--skip-master]
+
+--skip-master re-times the refinements only, keeping the export checks of the last run.
 """
 
 from __future__ import annotations
@@ -88,7 +90,7 @@ def footage(folder: Path, face: Path) -> Path:
     return folder
 
 
-def main(work: Path, face: Path, dtd: Path | None) -> int:
+def main(work: Path, face: Path, dtd: Path | None, skip_master: bool = False) -> int:
     os.environ["NULLCUT_HOME"] = str(work / "home")
     os.environ["NULLCUT_LLM"] = "off"
     from nullcut import export, music, pipeline, plan, refine
@@ -125,14 +127,33 @@ def main(work: Path, face: Path, dtd: Path | None) -> int:
     report["items"] = rec["encoded"] + rec["cached"]
     print(json.dumps(report), flush=True)
 
+    def unique_kept(skip: int) -> str:
+        """A kept sentence whose words appear nowhere else: what a creator would quote."""
+        doc = plan.latest_plan(project, with_beats=True)
+        pool = plan.segment_pool(project.clip_index())
+        texts = [pool[s]["text"] for s in pool]
+        kept = [pool[s]["text"] for b in doc["beats"] for s in b["segment_ids"]]
+        unique = [x for x in kept if texts.count(x) == 1 and len(x.split()) >= 5]
+        return unique[skip % len(unique)]
+
+    def dropped() -> str:
+        doc = plan.latest_plan(project, with_beats=True)
+        pool = plan.segment_pool(project.clip_index())
+        texts = [pool[s]["text"] for s in pool]
+        gone = [pool[s]["text"] for b in doc["beats"] for s in b.get("dropped_ids", [])]
+        return next(x for x in gone if texts.count(x) == 1 and len(x.split()) >= 5)
+
+    # Instructions as a creator types them; the structural ones quote a sentence that
+    # actually appears once in this transcript (the synthetic script repeats its leads).
     steps = [
         "less zoom", "music quieter", "no sound effects", "warmer", "bigger captions",
-        "punchier", "drop the part about the drone", "bring back the line about the budget",
-        "open on the part about thumbnails instead", "undo", "make it 9:00",
-        "generate the music",
+        "punchier", lambda: f'drop "{unique_kept(40)}"', "undo", "make it 9:00",
+        lambda: f'bring back "{dropped()}"',
+        lambda: f'open on "{unique_kept(90)}" instead', "generate the music",
     ]
     rows = []
     for text in steps:
+        text = text() if callable(text) else text
         try:
             out = pipeline.refine_edit(project, text, use_llm=False)
         except refine.RefineError as exc:
@@ -148,6 +169,11 @@ def main(work: Path, face: Path, dtd: Path | None) -> int:
         rows.append(row)
         print(json.dumps(row), flush=True)
 
+    if skip_master:
+        last = json.loads((work / "gate3.json").read_text())
+        checks = {"ok": last["fcpxml"]["ok"], "dtd_valid": last["fcpxml"].get("dtd_valid", True)}
+        report.update({k: last[k] for k in ("master_s", "fcpxml", "recheck") if k in last})
+        return _finish(work, report, rows, checks)
     t = time.perf_counter()
     m = pipeline.master(project)
     report["master_s"] = round(time.perf_counter() - t, 1)
@@ -167,6 +193,10 @@ def main(work: Path, face: Path, dtd: Path | None) -> int:
     report["recheck"] = export.check_fcpxml(fcp, project.path(
         "timelines", f"timeline.v{pkg['version']}.otio"))["ok"]
 
+    return _finish(work, report, rows, checks)
+
+
+def _finish(work: Path, report: dict, rows: list, checks: dict) -> int:
     tweaks = [r for r in rows if r.get("kind") == "tweak"]
     report["tweak_max_s"] = max((r["to_preview_s"] for r in tweaks), default=None)
     report["steps"] = rows
@@ -181,5 +211,7 @@ def main(work: Path, face: Path, dtd: Path | None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main(Path(sys.argv[1]), Path(sys.argv[2]),
-                  Path(sys.argv[3]) if len(sys.argv) > 3 else None))
+    flags = [a for a in sys.argv[1:] if a.startswith("--")]
+    pos = [a for a in sys.argv[1:] if not a.startswith("--")]
+    sys.exit(main(Path(pos[0]), Path(pos[1]), Path(pos[2]) if len(pos) > 2 else None,
+                  "--skip-master" in flags))
