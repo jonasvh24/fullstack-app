@@ -409,8 +409,50 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
 
     log(f"render {quality} {size[0]}x{size[1]} @ {fps:g} fps with {media.video_encoder()}: "
         f"{len(jobs_todo)} of {len(items)} items to encode, {len(items) - len(jobs_todo)} cached")
+    audio_key = stable_hash({"v": RENDER_VERSION, "fps": fps,
+                             "items": [(it.clip_id, it.src_in, it.frames) for it in items],
+                             "music": meta.get("music"), "sfx": meta.get("sfx"),
+                             "beats": meta.get("beats")})
+    mix_wav = cache / f"mix_{audio_key}.wav"
+    mix_m4a = cache / f"mix_{audio_key}.m4a"
+    qc_path = cache / f"mix_{audio_key}.cuts.json"
+    audio_cached = mix_m4a.exists() and qc_path.exists()
+
+    def make_audio() -> None:
+        """The whole mix, levelled and encoded. Runs beside the video encodes: neither
+        needs the other until the final mux."""
+        import time
+
+        from . import loudness
+        log("mix audio and normalise to "
+            f"{config.LOUDNESS_TARGET_LUFS:g} LUFS / {config.TRUE_PEAK_DBTP:g} dBTP")
+        t = [time.perf_counter()]
+
+        def lap() -> float:
+            t.append(time.perf_counter())
+            return round(t[-1] - t[-2], 2)
+
+        dialogue = assemble_audio(project, items, clips, fps)
+        starts = np.cumsum([0] + [it.frames for it in items])[:-1] / fps
+        cuts = [float(starts[k + 1]) for k in range(len(items) - 1)
+                if not contiguous(items[k], items[k + 1], fps)]
+        report = cut_report(dialogue, cuts)
+        laps = {"dialogue_s": lap()}
+        mixed = mix_audio(dialogue, meta, words)
+        laps["mix_s"] = lap()
+        level, stats = loudness.normalise(mixed, config.LOUDNESS_TARGET_LUFS,
+                                          config.TRUE_PEAK_DBTP)
+        laps["loudness_s"] = lap()
+        write_wav(level, mix_wav)
+        encode_audio(mix_wav, mix_m4a)
+        mix_wav.unlink(missing_ok=True)
+        laps["encode_s"] = lap()
+        write_json(qc_path, {**report, "mix_loudness": stats, "audio_timing": laps})
+
     workers = jobs or int(os.environ.get("NULLCUT_RENDER_JOBS", min(4, os.cpu_count() or 1)))
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+    with ThreadPoolExecutor(max_workers=1) as audio_pool, \
+            ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        audio_job = None if audio_cached else audio_pool.submit(make_audio)
         futures = [pool.submit(render_item, src, it, out, ass, size, quality, fps, zooms,
                                brolls, lut, track, grade)
                    for src, it, out, ass, zooms, brolls, track in jobs_todo]
@@ -419,6 +461,9 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
             progress(0.85 * n / len(futures), f"encoded {n}/{len(futures)} items")
             if n % 25 == 0 or n == len(futures):
                 log(f"  encoded {n}/{len(futures)}")
+        progress(0.88, "mixing audio")
+        if audio_job is not None:
+            audio_job.result()
 
     version = meta["version"]
     kind = meta.get("stem", "rough")
@@ -430,31 +475,6 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
     video = cache / f"{stem}.video.mp4"
     media.ffmpeg("-f", "concat", "-safe", "0", "-i", str(concat_list), "-c", "copy", "-an",
                  str(video))
-
-    audio_key = stable_hash({"v": RENDER_VERSION, "fps": fps,
-                             "items": [(it.clip_id, it.src_in, it.frames) for it in items],
-                             "music": meta.get("music"), "sfx": meta.get("sfx"),
-                             "beats": meta.get("beats")})
-    mix_wav = cache / f"mix_{audio_key}.wav"
-    mix_m4a = cache / f"mix_{audio_key}.m4a"
-    qc_path = cache / f"mix_{audio_key}.cuts.json"
-    progress(0.88, "mixing audio")
-    audio_cached = mix_m4a.exists() and qc_path.exists()
-    if not audio_cached:
-        log("mix audio and normalise to "
-            f"{config.LOUDNESS_TARGET_LUFS:g} LUFS / {config.TRUE_PEAK_DBTP:g} dBTP")
-        dialogue = assemble_audio(project, items, clips, fps)
-        starts = np.cumsum([0] + [it.frames for it in items])[:-1] / fps
-        cuts = [float(starts[k + 1]) for k in range(len(items) - 1)
-                if not contiguous(items[k], items[k + 1], fps)]
-        from . import loudness
-        report = cut_report(dialogue, cuts)
-        level, stats = loudness.normalise(mix_audio(dialogue, meta, words),
-                                          config.LOUDNESS_TARGET_LUFS, config.TRUE_PEAK_DBTP)
-        write_wav(level, mix_wav)
-        encode_audio(mix_wav, mix_m4a)
-        mix_wav.unlink(missing_ok=True)
-        write_json(qc_path, {**report, "mix_loudness": stats})
 
     final = renders / f"{stem}.mp4"
     tmp = final.with_name(f".{final.name}")
@@ -470,6 +490,7 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
 
     cut_qc = read_json(qc_path)
     mix_loud = cut_qc.pop("mix_loudness", None)
+    cut_qc.pop("audio_timing", None)
     if quality == "master" or not mix_loud:
         # The delivered master is measured independently, by FFmpeg, from the file itself.
         loud = {**measure_loudness(final), "loudness_measured_on": "file"}
