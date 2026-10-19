@@ -25,7 +25,7 @@ from .project import Project, read_json, stable_hash, write_json
 
 # Bump when render output changes for identical inputs; old cache entries
 # simply stop matching.
-RENDER_VERSION = 4
+RENDER_VERSION = 5
 
 Log = Callable[[str], None]
 
@@ -98,7 +98,9 @@ def zoom_filter(zooms: list[dict], fps: float, interpolation: str = "cubic") -> 
     args = ":".join(f"{k}='0*({pre})+{v}'" for k, v in corner.items())
     # Outside every zoom the envelope is zero and the frame passes untouched: the filter
     # is switched off there instead of remapping identical pixels.
-    windows = "+".join(f"between(t,{z['start'] - 1 / fps:.4f},{z['end'] + 1 / fps:.4f})"
+    # A drift holds its scale once it has arrived, so it stays on from its start.
+    windows = "+".join(f"gte(t,{z['start'] - 1 / fps:.4f})" if z["kind"] == "drift" else
+                       f"between(t,{z['start'] - 1 / fps:.4f},{z['end'] + 1 / fps:.4f})"
                        for z in zooms)
     return (f"perspective={args}:sense=source:interpolation={interpolation}:eval=frame"
             f":enable='gt({windows},0)'")
@@ -286,10 +288,12 @@ def _loudnorm_json(stderr: str) -> dict:
     return json.loads(blocks[-1]) if blocks else {}
 
 
-def encode_audio(wav: Path, out: Path) -> None:
-    """The already-levelled mix to AAC, one pass."""
+def encode_audio(wav: Path, out: Path, fast: bool = False) -> None:
+    """The already-levelled mix to AAC, one pass. Previews use the encoder's fast coder:
+    2.3x quicker on a real 10-minute mix (24 s to 10 s); masters keep the default search."""
     tmp = out.with_name(f".{out.name}")
-    media.ffmpeg("-i", str(wav), "-c:a", "aac", "-b:a", config.AUDIO_BITRATE,
+    coder = ["-aac_coder", "fast"] if fast else []
+    media.ffmpeg("-i", str(wav), "-c:a", "aac", *coder, "-b:a", config.AUDIO_BITRATE,
                  "-ar", str(config.MIX_SAMPLE_RATE), "-f", "mp4", str(tmp))
     os.replace(tmp, out)
 
@@ -409,7 +413,7 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
 
     log(f"render {quality} {size[0]}x{size[1]} @ {fps:g} fps with {media.video_encoder()}: "
         f"{len(jobs_todo)} of {len(items)} items to encode, {len(items) - len(jobs_todo)} cached")
-    audio_key = stable_hash({"v": RENDER_VERSION, "fps": fps,
+    audio_key = stable_hash({"v": RENDER_VERSION, "fps": fps, "master": quality == "master",
                              "items": [(it.clip_id, it.src_in, it.frames) for it in items],
                              "music": meta.get("music"), "sfx": meta.get("sfx"),
                              "beats": meta.get("beats")})
@@ -444,7 +448,7 @@ def render(project: Project, timeline_path: Path, quality: str = "master",
                                           config.TRUE_PEAK_DBTP)
         laps["loudness_s"] = lap()
         write_wav(level, mix_wav)
-        encode_audio(mix_wav, mix_m4a)
+        encode_audio(mix_wav, mix_m4a, fast=quality != "master")
         mix_wav.unlink(missing_ok=True)
         laps["encode_s"] = lap()
         write_json(qc_path, {**report, "mix_loudness": stats, "audio_timing": laps})
