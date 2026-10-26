@@ -17,7 +17,33 @@ python -m tiktok_usernames report --top 30 --min-rarity 60
 
 # Or do all of the above in the browser.
 python -m tiktok_usernames serve
+
+# Prove checks read real TikTok from your connection (3 requests).
+python -m tiktok_usernames verify
 ```
+
+On macOS use `python3` in place of `python`.
+
+## Verified against real accounts
+
+Every run starts by checking two accounts that certainly exist (`@tiktok`,
+`@khaby.lame`, `@mrbeast` and similar) and one random 18-character name
+that certainly does not. The run only starts if the real accounts come
+back `taken` and the random one `no_profile`. Otherwise it stops and says
+why:
+
+| Verify result | Meaning |
+|---|---|
+| Real accounts `unknown` | TikTok is not serving profiles to your connection: bot check, login wall or network block. Wait, or try another network. |
+| Real accounts `no_profile` | TikTok changed its page format. The page it returned is saved in `tiktok_debug/`; send it over so the parser can be updated. |
+| Random name `taken` | The parser is misreading pages. Same fix. |
+
+Run it on its own with `verify`, or with the **Test connection** button in
+the web UI. `check --skip-verify` bypasses it; there is rarely a reason to.
+
+The parser reads the same embedded data (`__UNIVERSAL_DATA_FOR_REHYDRATION__`
+> `webapp.user-detail`) and treats status 10222 as a private, taken account,
+matching what yt-dlp's TikTok extractor relies on.
 
 ## Web UI
 
@@ -70,9 +96,9 @@ requests on the names that matter.
 
 | Status | Meaning |
 |---|---|
-| `taken` | TikTok returned a user for that handle, private accounts included. |
+| `taken` | TikTok returned a user for that handle, or its private-account code (10222). |
 | `no_profile` | TikTok answered cleanly with no user. **Candidate only.** |
-| `unknown` | Bot wall, captcha, network error or a page layout change. Never treated as available, always rechecked. |
+| `unknown` | TikTok's bot check, a login redirect, a network error or a page layout change. Never treated as available, always rechecked. |
 
 `no_profile` is not the same as claimable. Banned, deleted and
 TikTok-reserved handles also have no public profile but cannot be
@@ -91,7 +117,8 @@ The checker is built to stay under the radar honestly rather than evade it:
 - stops the run after 5 unusable responses in a row;
 - refuses a `--delay` under 1s.
 
-No proxy rotation, no captcha solving. If you get blocked, wait and rerun
+It keeps TikTok's session cookies between requests as a browser would. No
+proxy rotation, no faked TLS fingerprints, no solving TikTok's bot challenge. If you get blocked, wait and rerun
 with a longer delay. At the defaults, expect about 950 checks per hour.
 
 ## Tests

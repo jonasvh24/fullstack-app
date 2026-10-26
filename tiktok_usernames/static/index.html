@@ -122,12 +122,20 @@
   .bar { height: 8px; background: var(--field); border-radius: 999px; overflow: hidden; margin: 12px 0 6px; }
   .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .4s ease; }
   .state { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; text-transform: capitalize; }
-  .state.running .dot { background: var(--accent); animation: pulse 1.2s infinite; }
+  .state.running .dot, .state.verifying .dot { background: var(--accent); animation: pulse 1.2s infinite; }
   .state.done .dot { background: var(--good); }
-  .state.blocked .dot, .state.error .dot { background: var(--bad); }
+  .state.blocked .dot, .state.error .dot, .state.failed .dot { background: var(--bad); }
   .state.stopped .dot, .state.idle .dot { background: var(--muted); }
   @keyframes pulse { 50% { opacity: .3; } }
-  @media (prefers-reduced-motion: reduce) { .state.running .dot { animation: none; } .bar > i { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .state.running .dot, .state.verifying .dot { animation: none; } .bar > i { transition: none; } }
+  .verify { margin-top: 12px; border-radius: 8px; padding: 10px 12px; font-size: 13px; background: var(--field); }
+  .verify.ok { background: var(--good-soft); }
+  .verify.bad { background: var(--bad-soft); }
+  .verify b { display: block; margin-bottom: 4px; }
+  .verify.ok b { color: var(--good); }
+  .verify.bad b { color: var(--bad); }
+  .verify ul { margin: 6px 0 0; padding: 0; list-style: none; font: 12px/1.6 var(--mono); }
+  .verify .when { color: var(--muted); font-size: 12px; margin-top: 4px; }
   .feed { list-style: none; margin: 10px 0 0; padding: 0; max-height: 300px; overflow: auto; border-top: 1px solid var(--line); }
   .feed li { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 6px 2px; border-bottom: 1px solid var(--line); font-size: 13px; }
   .feed .u { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; }
@@ -224,6 +232,7 @@
       <div class="actions">
         <button type="button" class="primary" id="startBtn">Start check</button>
         <button type="button" class="danger" id="stopBtn" disabled>Stop</button>
+        <button type="button" id="verifyBtn">Test connection</button>
         <span class="msg" id="runMsg" role="status"></span>
       </div>
 
@@ -232,6 +241,7 @@
         <span class="state idle" id="state"><span class="dot"></span><span id="stateText">idle</span></span>
         <span class="msg" id="progressText"></span>
       </div>
+      <div class="verify" id="verifyBox" hidden role="status"></div>
       <div class="totals" id="runCounts" style="margin-top:8px"></div>
       <ul class="feed" id="feed" aria-live="polite"></ul>
     </section>
@@ -413,20 +423,22 @@ async function stop() {
 
 function renderRun(run) {
   const state = run ? run.state : "idle";
-  const running = state === "running";
+  const running = state === "running" || state === "verifying";
   $("startBtn").disabled = running;
   $("stopBtn").disabled = !running;
+  $("verifyBtn").disabled = running || verifying;
   $("state").className = `state ${state}`;
   $("stateText").textContent = state;
   if (!run) return;
 
+  if (run.verify) renderVerify(run.verify);
   const pct = run.total ? (run.done / run.total) * 100 : 100;
   $("progress").style.width = `${pct}%`;
   $("progressText").textContent = running
     ? `${run.done} / ${run.total} · ~${fmtDuration(run.eta_seconds)} left`
     : `${run.done} / ${run.total} checked${run.cached ? ` · ${run.cached} cached` : ""}`;
   if (run.message) {
-    $("runMsg").className = state === "blocked" || state === "error" ? "msg err" : "msg";
+    $("runMsg").className = ["blocked", "error", "failed"].includes(state) ? "msg err" : "msg";
     $("runMsg").textContent = run.message;
   }
   $("runCounts").replaceChildren(...Object.entries(run.counts).map(([k, v]) =>
@@ -440,6 +452,43 @@ function renderRun(run) {
   if (run.done !== lastDone) { lastDone = run.done; loadResults(); }
 }
 
+let verifying = false;
+function renderVerify(v) {
+  const box = $("verifyBox");
+  box.hidden = false;
+  box.className = `verify ${v.ok ? "ok" : "bad"}`;
+  const kids = [
+    el("b", {}, v.ok ? "Connected to TikTok" : "TikTok check failed"),
+    v.explanation,
+    el("ul", {}, ...v.lines.map((l) => el("li", {}, l))),
+  ];
+  if (v.debug_files && v.debug_files.length) {
+    kids.push(el("div", { class: "when" }, `Saved TikTok's response for diagnosis: ${v.debug_files.join(", ")}`));
+  }
+  if (v.at) kids.push(el("div", { class: "when" }, `Tested ${new Date(v.at * 1000).toLocaleTimeString()}`));
+  box.replaceChildren(...kids);
+}
+
+async function verifyNow() {
+  verifying = true;
+  $("verifyBtn").disabled = true;
+  $("startBtn").disabled = true;
+  $("verifyBtn").textContent = "Testing…";
+  $("runMsg").className = "msg";
+  $("runMsg").textContent = "Checking known accounts on TikTok…";
+  try {
+    renderVerify(await api("/api/verify", { delay: Number($("delay").value) || 3 }));
+    $("runMsg").textContent = "";
+  } catch (e) {
+    $("runMsg").className = "msg err";
+    $("runMsg").textContent = e.message;
+  } finally {
+    verifying = false;
+    $("verifyBtn").textContent = "Test connection";
+    poll();
+  }
+}
+
 async function poll() {
   clearTimeout(pollTimer);
   let running = false;
@@ -447,7 +496,8 @@ async function poll() {
     const s = await api("/api/status");
     renderTotals(s.totals);
     renderRun(s.run);
-    running = s.run && s.run.state === "running";
+    running = s.run && ["running", "verifying"].includes(s.run.state);
+    if (s.last_verify && !s.run?.verify) renderVerify(s.last_verify);
   } catch (e) {
     $("runMsg").className = "msg err";
     $("runMsg").textContent = "Lost contact with the local server.";
@@ -494,6 +544,7 @@ $("csvBtn").addEventListener("click", () => { window.location.href = `/api/resul
 $("previewBtn").addEventListener("click", preview);
 $("startBtn").addEventListener("click", start);
 $("stopBtn").addEventListener("click", stop);
+$("verifyBtn").addEventListener("click", verifyNow);
 
 buildControls();
 $("patterns").value = "CVCV";

@@ -8,9 +8,10 @@ import urllib.request
 from pathlib import Path
 
 from tiktok_usernames.tests.test_usernames import MISSING_PAGE, universal_page
+from tiktok_usernames.verify import KNOWN_TAKEN
 from tiktok_usernames.web import make_server
 
-TAKEN = {"kavo", "bako"}
+TAKEN = {"kavo", "bako", *KNOWN_TAKEN}
 
 
 def fake_fetch(url: str) -> tuple[int, str]:
@@ -21,9 +22,11 @@ def fake_fetch(url: str) -> tuple[int, str]:
 
 
 class WebTest(unittest.TestCase):
+    fetch = staticmethod(fake_fetch)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.server = make_server(Path(self.tmp.name) / "w.db", "127.0.0.1", 0, fetch=fake_fetch)
+        self.server = make_server(Path(self.tmp.name) / "w.db", "127.0.0.1", 0, fetch=self.fetch)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -90,6 +93,7 @@ class WebTest(unittest.TestCase):
         status, _ = self.request("/api/run", {"names": ["kavo", "zqxv"], "delay": 1, "jitter": 0})
         self.assertEqual(status, 200)
         s = self.wait_for({"done"})
+        self.assertTrue(s["run"]["verify"]["ok"])
         self.assertEqual(s["run"]["counts"], {"taken": 1, "no_profile": 1, "unknown": 0})
         self.assertEqual(s["totals"], {"taken": 1, "no_profile": 1})
 
@@ -103,9 +107,21 @@ class WebTest(unittest.TestCase):
         self.assertEqual(lines[0], "username,status,rarity,tiktok_code,checked_at_utc")
         self.assertEqual(len(lines), 3)
 
-        # Second preview sees both as cached.
+        # Second preview sees both as cached, and a rerun finishes without any requests.
         _, p = self.request("/api/preview", {"names": ["kavo", "zqxv"]})
         self.assertEqual((p["to_check"], p["cached"]), (0, 2))
+        self.request("/api/run", {"names": ["kavo", "zqxv"], "delay": 1})
+        s = self.wait_for({"done"})
+        self.assertIsNone(s["run"]["verify"])
+        self.assertIn("cached", s["run"]["message"])
+
+    def test_verify_endpoint(self):
+        status, v = self.request("/api/verify", {"delay": 1})
+        self.assertEqual(status, 200)
+        self.assertTrue(v["ok"])
+        self.assertEqual(len(v["lines"]), 3)
+        _, s = self.request("/api/status")
+        self.assertTrue(s["last_verify"]["ok"])
 
     def test_stop_interrupts_delay_and_blocks_concurrent_runs(self):
         names = [f"zz{c}{c}" for c in "abcdefgh"]
@@ -116,6 +132,26 @@ class WebTest(unittest.TestCase):
         s = self.wait_for({"stopped"}, timeout=5)
         self.assertLess(time.time() - started, 5)  # did not sit out the 30s delay
         self.assertLess(s["run"]["done"], len(names))
+
+
+
+class BlockedWebTest(WebTest):
+    """Same server, but TikTok answers every request with its bot check."""
+
+    fetch = staticmethod(lambda url: (200, '<html><div id="cs" class="x"></div>Please wait...</html>'))
+
+    def test_run_refuses_to_start_when_verify_fails(self):
+        self.request("/api/run", {"names": ["kavo", "zqxv"], "delay": 1, "jitter": 0})
+        s = self.wait_for({"failed"})
+        self.assertFalse(s["run"]["verify"]["ok"])
+        self.assertIn("not serving", s["run"]["verify"]["explanation"])
+        self.assertEqual(s["run"]["done"], 0)
+        self.assertEqual(s["totals"], {})  # nothing was recorded as available
+
+    # The inherited happy-path tests assume a working TikTok; skip them here.
+    test_run_to_completion_then_results_and_csv = None
+    test_stop_interrupts_delay_and_blocks_concurrent_runs = None
+    test_verify_endpoint = None
 
 
 if __name__ == "__main__":

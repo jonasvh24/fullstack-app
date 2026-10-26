@@ -4,7 +4,10 @@ import unittest
 from pathlib import Path
 
 from tiktok_usernames import generate
-from tiktok_usernames.checker import Blocked, Checker, Status, parse_profile_html
+import random
+
+from tiktok_usernames.checker import LOGIN_REDIRECT, Blocked, Checker, Status, parse_profile_html
+from tiktok_usernames.verify import KNOWN_TAKEN, verify
 from tiktok_usernames.rules import is_valid, normalise
 from tiktok_usernames.score import is_pronounceable, rarity
 from tiktok_usernames.store import Store
@@ -95,6 +98,16 @@ class ParseTest(unittest.TestCase):
         status, code, _ = parse_profile_html("kavo", MISSING_PAGE)
         self.assertEqual((status, code), (Status.NO_PROFILE, 10221))
 
+    def test_private_account_without_user_object_is_taken(self):
+        page = universal_page({"statusCode": 10222, "statusMsg": "", "userInfo": {}})
+        self.assertEqual(parse_profile_html("kavo", page)[:2], (Status.TAKEN, 10222))
+
+    def test_bot_challenge_is_unknown_and_named(self):
+        page = '<html><div id="cs" class="eyJ2Ijp7fX0"></div><div id="wci" class="_wafchallengeid"></div>Please wait...</html>'
+        status, _, detail = parse_profile_html("kavo", page)
+        self.assertEqual(status, Status.UNKNOWN)
+        self.assertIn("bot check", detail)
+
     def test_bot_wall_is_unknown(self):
         self.assertEqual(parse_profile_html("kavo", "<html>captcha</html>")[0], Status.UNKNOWN)
 
@@ -131,6 +144,12 @@ class CheckerTest(unittest.TestCase):
         self.assertIn(4.0, sleeps)
         self.assertIn(8.0, sleeps)
 
+    def test_login_redirect_is_unknown(self):
+        checker, _, _ = self.make([(LOGIN_REDIRECT, "")])
+        result = checker.check("kavo")
+        self.assertEqual(result.status, Status.UNKNOWN)
+        self.assertIn("login", result.detail)
+
     def test_gives_up_after_retries(self):
         checker, _, _ = self.make([(429, "")] * 4, max_retries=3)
         result = checker.check("kavo")
@@ -148,6 +167,48 @@ class CheckerTest(unittest.TestCase):
         checker, _, _ = self.make(pages, max_consecutive_unknown=3)
         for name in ["a1", "a2", "kavo", "a3", "a4"]:
             checker.check(name)  # never three unknowns in a row
+
+
+def page_for(taken: set[str]):
+    def fetch(url):
+        name = url.rsplit("@", 1)[1]
+        if name in taken:
+            return 200, universal_page({"statusCode": 0, "userInfo": {"user": {"uniqueId": name}}})
+        return 200, MISSING_PAGE
+    return fetch
+
+
+class VerifyTest(unittest.TestCase):
+    def run_verify(self, fetch, debug_dir=None):
+        checker = Checker(delay=1, jitter=0, fetch=fetch, sleep=lambda s: None)
+        return verify(checker, debug_dir=debug_dir, rng=random.Random(4))
+
+    def test_passes_when_known_accounts_are_taken(self):
+        report = self.run_verify(page_for(set(KNOWN_TAKEN)))
+        self.assertTrue(report.ok)
+        self.assertEqual(len(report.probes), 3)
+        self.assertTrue(all(line.startswith("PASS") for line in report.as_dict()["lines"]))
+
+    def test_fails_when_real_accounts_look_free(self):
+        with tempfile.TemporaryDirectory() as d:
+            report = self.run_verify(page_for(set()), Path(d) / "dbg")
+            self.assertFalse(report.ok)
+            self.assertIn("format", report.explanation())
+            self.assertEqual(len(report.debug_files), 2)  # the two known accounts
+            self.assertTrue(all(Path(f).exists() for f in report.debug_files))
+
+    def test_fails_when_tiktok_blocks(self):
+        report = self.run_verify(lambda url: (200, "<html>Please wait...</html>"))
+        self.assertFalse(report.ok)
+        self.assertIn("not serving", report.explanation())
+
+    def test_fails_when_everything_looks_taken(self):
+        def fetch(url):
+            name = url.rsplit("@", 1)[1]
+            return 200, universal_page({"statusCode": 0, "userInfo": {"user": {"uniqueId": name}}})
+        report = self.run_verify(fetch)
+        self.assertFalse(report.ok)
+        self.assertIn("random name", report.explanation())
 
 
 class StoreTest(unittest.TestCase):

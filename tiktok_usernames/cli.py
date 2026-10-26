@@ -3,6 +3,7 @@
     python -m tiktok_usernames generate --pattern CVCV --limit 50
     python -m tiktok_usernames check --length 4 --limit 200 --delay 4
     python -m tiktok_usernames report --top 30
+    python -m tiktok_usernames verify           # are checks reading real TikTok?
     python -m tiktok_usernames serve            # web UI on http://127.0.0.1:8000
 """
 from __future__ import annotations
@@ -15,6 +16,9 @@ from pathlib import Path
 from . import candidates
 from .checker import Blocked, Checker, Status
 from .store import Store
+from .verify import verify
+
+DEBUG_DIR = Path("tiktok_debug")
 
 DEFAULT_DB = Path("tiktok_usernames.db")
 
@@ -66,6 +70,8 @@ def cmd_check(args: argparse.Namespace) -> None:
     skipped = len(candidates) - len(todo)
     eta_min = len(todo) * (args.delay + args.jitter / 2) / 60
     print(f"{len(todo)} to check, {skipped} cached. ETA ~{eta_min:.0f} min.", file=sys.stderr)
+    if todo and not args.skip_verify and not _verify_or_explain(checker):
+        sys.exit(1)
 
     found = []
     try:
@@ -93,6 +99,22 @@ def cmd_check(args: argparse.Namespace) -> None:
             writer.writerow(["username", "rarity", "tiktok_code"])
             writer.writerows(found)
         print(f"Wrote {args.out}", file=sys.stderr)
+
+
+def _verify_or_explain(checker: Checker) -> bool:
+    print("Verifying against real TikTok accounts...", file=sys.stderr)
+    report = verify(checker, debug_dir=DEBUG_DIR)
+    for line in report.as_dict()["lines"]:
+        print(f"  {line}", file=sys.stderr)
+    print(report.explanation(), file=sys.stderr)
+    for path in report.debug_files:
+        print(f"  Saved the page TikTok returned: {path}", file=sys.stderr)
+    return report.ok
+
+
+def cmd_verify(args: argparse.Namespace) -> None:
+    if not _verify_or_explain(Checker(delay=args.delay, jitter=0)):
+        sys.exit(1)
 
 
 def cmd_report(args: argparse.Namespace) -> None:
@@ -132,7 +154,13 @@ def main(argv: list[str] | None = None) -> None:
     p_chk.add_argument("--max-age-hours", type=float, default=72,
                        help="recheck cached names older than this (default 72)")
     p_chk.add_argument("--out", type=Path, help="write this run's no-profile hits to CSV")
+    p_chk.add_argument("--skip-verify", action="store_true",
+                       help="don't check known accounts first (not recommended)")
     p_chk.set_defaults(func=cmd_check)
+
+    p_ver = sub.add_parser("verify", help="prove checks work: known accounts must come back taken")
+    p_ver.add_argument("--delay", type=float, default=3.0, help="seconds between the three requests")
+    p_ver.set_defaults(func=cmd_verify)
 
     p_rep = sub.add_parser("report", help="show the rarest no-profile handles found so far")
     p_rep.add_argument("--top", type=int, default=25)

@@ -25,6 +25,7 @@ from . import candidates
 from .checker import Blocked, Checker, Fetcher, Status, http_fetch
 from .rules import MAX_LEN
 from .store import Store
+from .verify import verify
 
 STATIC = Path(__file__).parent / "static"
 MAX_BODY = 2_000_000
@@ -93,7 +94,8 @@ class Run:
         self.cached = cached
         self.delay = delay
         self.jitter = jitter
-        self.state = "running"
+        self.state = "verifying"
+        self.verify: dict | None = None
         self.message = ""
         self.done = 0
         self.counts = {s.value: 0 for s in Status}
@@ -101,6 +103,10 @@ class Run:
         self.started = time.time()
         self.finished: float | None = None
         self.stop_event = threading.Event()
+
+    @property
+    def active(self) -> bool:
+        return self.state in ("verifying", "running")
 
     def snapshot(self) -> dict:
         remaining = len(self.todo) - self.done
@@ -111,10 +117,11 @@ class Run:
             "done": self.done,
             "cached": self.cached,
             "counts": self.counts,
-            "eta_seconds": round(remaining * (self.delay + self.jitter / 2)) if self.state == "running" else 0,
+            "eta_seconds": round(remaining * (self.delay + self.jitter / 2)) if self.active else 0,
             "started": self.started,
             "finished": self.finished,
             "feed": list(self.feed),
+            "verify": self.verify,
         }
 
 
@@ -125,6 +132,8 @@ class App:
         self.lock = threading.Lock()
         self.run: Run | None = None
         self.thread: threading.Thread | None = None
+        self.last_verify: dict | None = None
+        self.debug_dir = db.resolve().parent / "tiktok_debug"
         Store(db).close()  # create the schema up front
 
     def _split(self, spec: candidates.Spec, max_age_hours: float) -> tuple[list, list]:
@@ -158,7 +167,7 @@ class App:
         jitter = _num(body, "jitter", 1.5, 0.0, 60.0, float)
         todo, fresh = self._split(parse_spec(body), _num(body, "max_age_hours", 72.0, 0.0, 10_000.0, float))
         with self.lock:
-            if self.run and self.run.state == "running":
+            if self.run and self.run.active:
                 raise BadRequest("A run is already in progress. Stop it first.")
             run = Run(todo, len(fresh), delay, jitter)
             self.run = run
@@ -168,7 +177,7 @@ class App:
 
     def stop(self) -> dict:
         with self.lock:
-            if self.run and self.run.state == "running":
+            if self.run and self.run.active:
                 self.run.stop_event.set()
             return self.status()
 
@@ -178,7 +187,21 @@ class App:
             counts = store.counts()
         finally:
             store.close()
-        return {"run": self.run.snapshot() if self.run else None, "totals": counts}
+        return {"run": self.run.snapshot() if self.run else None, "totals": counts,
+                "last_verify": self.last_verify}
+
+    def verify_now(self, body: dict) -> dict:
+        """Standalone connection test from the UI. Blocks for ~2 delays."""
+        delay = _num(body, "delay", 3.0, 1.0, 120.0, float)
+        with self.lock:
+            if self.run and self.run.active:
+                raise BadRequest("A run is in progress; it verified when it started.")
+        report = verify(Checker(delay=delay, jitter=0, fetch=self.fetch), debug_dir=self.debug_dir)
+        self._remember(report.as_dict())
+        return self.last_verify
+
+    def _remember(self, report: dict) -> None:
+        self.last_verify = {**report, "at": time.time()}
 
     def _work(self, run: Run) -> None:
         def fetch(url: str) -> tuple[int, str]:
@@ -205,6 +228,18 @@ class App:
             })
 
         try:
+            if not run.todo:
+                run.state = "done"
+                run.message = "Nothing to check: every candidate is cached."
+                return
+            report = verify(checker, debug_dir=self.debug_dir).as_dict()
+            run.verify = report
+            self._remember(report)
+            if not report["ok"]:
+                run.state = "failed"
+                run.message = "Not started: the TikTok check failed. Details below."
+                return
+            run.state = "running"
             for name, _ in run.todo:
                 if run.stop_event.is_set():
                     raise _Stopped
@@ -309,6 +344,7 @@ def make_handler(app: App, allowed_hosts: set[str]):
                 "/api/preview": lambda q: self._json(app.preview(self._body())),
                 "/api/run": lambda q: self._json(app.start(self._body())),
                 "/api/run/stop": lambda q: (self._body(), self._json(app.stop())),
+                "/api/verify": lambda q: self._json(app.verify_now(self._body())),
             })
 
         def _csv(self, query) -> None:
