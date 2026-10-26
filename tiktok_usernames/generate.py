@@ -8,6 +8,8 @@ Pattern syntax (one token per character):
 So "CVCV" yields names like "bako", "LLL" every three-letter name, and
 "xVC" names like "xak".
 """
+from __future__ import annotations
+
 import itertools
 import random
 

@@ -8,6 +8,8 @@ Host header is not the address it was started on (blocks DNS-rebinding
 pages) and only accepts JSON POST bodies (a cross-origin page cannot send
 those without a CORS preflight, which we never answer).
 """
+from __future__ import annotations
+
 import csv
 import io
 import json

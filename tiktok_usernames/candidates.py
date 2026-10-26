@@ -1,4 +1,6 @@
 """Candidate assembly shared by the CLI and the web UI."""
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 
 from . import generate

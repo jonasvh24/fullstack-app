@@ -5,6 +5,8 @@
     python -m tiktok_usernames report --top 30
     python -m tiktok_usernames serve            # web UI on http://127.0.0.1:8000
 """
+from __future__ import annotations
+
 import argparse
 import csv
 import sys

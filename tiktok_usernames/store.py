@@ -1,4 +1,6 @@
 """SQLite cache, so reruns skip names already checked and results accumulate."""
+from __future__ import annotations
+
 import sqlite3
 import time
 from pathlib import Path

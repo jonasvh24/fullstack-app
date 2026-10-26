@@ -5,6 +5,8 @@ shortness is what makes a handle scarce. Clean letters-only names, names
 you can say out loud, and real words add on top; digits and separators
 take away, because they are how people work around a taken name.
 """
+from __future__ import annotations
+
 from .generate import VOWELS
 
 _LENGTH_POINTS = {2: 60, 3: 50, 4: 38, 5: 26, 6: 16, 7: 8}

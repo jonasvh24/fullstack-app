@@ -1,7 +1,7 @@
 # tiktok_usernames
 
 Generates rare TikTok handle candidates, scores them for rarity, and checks
-each one for a public profile. Python 3.10+, standard library only.
+each one for a public profile. Python 3.9+ (the version built into macOS works), standard library only.
 
 ## Quick start
 

@@ -17,6 +17,8 @@ jitter between requests, exponential backoff on 429, and a hard stop when
 TikTok keeps refusing. It does not rotate proxies or solve captchas; if
 TikTok blocks you, slow down or stop.
 """
+from __future__ import annotations
+
 import json
 import random
 import re
