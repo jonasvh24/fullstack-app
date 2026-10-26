@@ -54,6 +54,19 @@ class Store:
             (status.value, min_rarity, limit),
         ).fetchall()
 
+    def rows(self, status: Status | None, min_rarity: int, search: str, limit: int) -> list[dict]:
+        sql = "SELECT * FROM results WHERE rarity >= ? AND username LIKE ? ESCAPE '\\'"
+        like = "%" + search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        params: list = [min_rarity, like]
+        if status is not None:
+            sql += " AND status = ?"
+            params.append(status.value)
+        sql += " ORDER BY rarity DESC, length(username), username LIMIT ?"
+        params.append(limit)
+        cur = self.conn.execute(sql, params)
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
     def counts(self) -> dict[str, int]:
         return dict(self.conn.execute("SELECT status, COUNT(*) FROM results GROUP BY status"))
 
