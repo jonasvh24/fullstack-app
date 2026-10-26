@@ -4,7 +4,10 @@ import unittest
 from pathlib import Path
 
 from tiktok_usernames import generate
-from tiktok_usernames.checker import Blocked, Checker, Status, parse_profile_html
+import random
+
+from tiktok_usernames.checker import LOGIN_REDIRECT, Blocked, Checker, Status, parse_profile_html
+from tiktok_usernames.verify import KNOWN_TAKEN, verify
 from tiktok_usernames.rules import is_valid, normalise
 from tiktok_usernames.score import is_pronounceable, rarity
 from tiktok_usernames.store import Store
@@ -95,6 +98,16 @@ class ParseTest(unittest.TestCase):
         status, code, _ = parse_profile_html("kavo", MISSING_PAGE)
         self.assertEqual((status, code), (Status.NO_PROFILE, 10221))
 
+    def test_private_account_without_user_object_is_taken(self):
+        page = universal_page({"statusCode": 10222, "statusMsg": "", "userInfo": {}})
+        self.assertEqual(parse_profile_html("kavo", page)[:2], (Status.TAKEN, 10222))
+
+    def test_bot_challenge_is_unknown_and_named(self):
+        page = '<html><div id="cs" class="eyJ2Ijp7fX0"></div><div id="wci" class="_wafchallengeid"></div>Please wait...</html>'
+        status, _, detail = parse_profile_html("kavo", page)
+        self.assertEqual(status, Status.UNKNOWN)
+        self.assertIn("bot check", detail)
+
     def test_bot_wall_is_unknown(self):
         self.assertEqual(parse_profile_html("kavo", "<html>captcha</html>")[0], Status.UNKNOWN)
 
@@ -131,6 +144,12 @@ class CheckerTest(unittest.TestCase):
         self.assertIn(4.0, sleeps)
         self.assertIn(8.0, sleeps)
 
+    def test_login_redirect_is_unknown(self):
+        checker, _, _ = self.make([(LOGIN_REDIRECT, "")])
+        result = checker.check("kavo")
+        self.assertEqual(result.status, Status.UNKNOWN)
+        self.assertIn("login", result.detail)
+
     def test_gives_up_after_retries(self):
         checker, _, _ = self.make([(429, "")] * 4, max_retries=3)
         result = checker.check("kavo")
@@ -150,6 +169,48 @@ class CheckerTest(unittest.TestCase):
             checker.check(name)  # never three unknowns in a row
 
 
+def page_for(taken: set[str]):
+    def fetch(url):
+        name = url.rsplit("@", 1)[1]
+        if name in taken:
+            return 200, universal_page({"statusCode": 0, "userInfo": {"user": {"uniqueId": name}}})
+        return 200, MISSING_PAGE
+    return fetch
+
+
+class VerifyTest(unittest.TestCase):
+    def run_verify(self, fetch, debug_dir=None):
+        checker = Checker(delay=1, jitter=0, fetch=fetch, sleep=lambda s: None)
+        return verify(checker, debug_dir=debug_dir, rng=random.Random(4))
+
+    def test_passes_when_known_accounts_are_taken(self):
+        report = self.run_verify(page_for(set(KNOWN_TAKEN)))
+        self.assertTrue(report.ok)
+        self.assertEqual(len(report.probes), 3)
+        self.assertTrue(all(line.startswith("PASS") for line in report.as_dict()["lines"]))
+
+    def test_fails_when_real_accounts_look_free(self):
+        with tempfile.TemporaryDirectory() as d:
+            report = self.run_verify(page_for(set()), Path(d) / "dbg")
+            self.assertFalse(report.ok)
+            self.assertIn("format", report.explanation())
+            self.assertEqual(len(report.debug_files), 2)  # the two known accounts
+            self.assertTrue(all(Path(f).exists() for f in report.debug_files))
+
+    def test_fails_when_tiktok_blocks(self):
+        report = self.run_verify(lambda url: (200, "<html>Please wait...</html>"))
+        self.assertFalse(report.ok)
+        self.assertIn("not serving", report.explanation())
+
+    def test_fails_when_everything_looks_taken(self):
+        def fetch(url):
+            name = url.rsplit("@", 1)[1]
+            return 200, universal_page({"statusCode": 0, "userInfo": {"user": {"uniqueId": name}}})
+        report = self.run_verify(fetch)
+        self.assertFalse(report.ok)
+        self.assertIn("random name", report.explanation())
+
+
 class StoreTest(unittest.TestCase):
     def test_roundtrip_and_freshness(self):
         from tiktok_usernames.checker import CheckResult
@@ -161,9 +222,150 @@ class StoreTest(unittest.TestCase):
             self.assertTrue(store.is_fresh("kavo", 1))
             self.assertFalse(store.is_fresh("zzz", 1))  # unknowns always get rechecked
             self.assertFalse(store.is_fresh("nope", 1))
-            self.assertEqual(store.top(Status.NO_PROFILE, 10)[0][:3], ("kavo", 63, 10221))
+            row = store.rows("likely", 0, "", 10)[0]
+            self.assertEqual((row["username"], row["rarity"], row["tiktok_code"]), ("kavo", 63, 10221))
             self.assertEqual(store.counts(), {"no_profile": 1, "unknown": 1})
             store.close()
+
+    def test_confirmations(self):
+        from tiktok_usernames.checker import CheckResult
+
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(Path(d) / "t.db")
+            for name, code in [("kavo", 10221), ("lumi", 10221), ("zeyn", 10202)]:
+                store.save(CheckResult(name, Status.NO_PROFILE, 200, code), 63)
+            store.save(CheckResult("bako", Status.TAKEN, 200, 0), 63)
+
+            self.assertTrue(store.mark("kavo", True))
+            self.assertTrue(store.mark("zeyn", False))
+            self.assertFalse(store.mark("never", True))  # never checked
+
+            names = lambda view: [r["username"] for r in store.rows(view, 0, "", 50)]
+            self.assertEqual(names("confirmed"), ["kavo"])
+            self.assertEqual(names("rejected"), ["zeyn"])
+            self.assertEqual(names("likely"), ["lumi"])
+            counts = store.view_counts()
+            self.assertEqual((counts["confirmed"], counts["likely"], counts["taken"], counts["all"]), (1, 1, 1, 4))
+            self.assertEqual(store.code_stats(), [
+                {"code": 10202, "claimable": 0, "not_claimable": 1},
+                {"code": 10221, "claimable": 1, "not_claimable": 0},
+            ])
+
+            # A recheck that still finds no profile keeps the confirmation...
+            store.save(CheckResult("kavo", Status.NO_PROFILE, 200, 10221), 63)
+            self.assertEqual(names("confirmed"), ["kavo"])
+            # ...but once someone takes the name, the confirmation is stale and cleared.
+            store.save(CheckResult("kavo", Status.TAKEN, 200, 0), 63)
+            self.assertEqual(names("confirmed"), [])
+
+            store.mark("zeyn", None)
+            self.assertEqual(names("rejected"), [])
+            store.close()
+
+    def test_migrates_old_database(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "old.db"
+            conn = sqlite3.connect(path)
+            conn.execute("CREATE TABLE results (username TEXT PRIMARY KEY, status TEXT NOT NULL, "
+                         "rarity INTEGER NOT NULL, http_status INTEGER, tiktok_code INTEGER, "
+                         "detail TEXT, checked_at REAL NOT NULL)")
+            conn.execute("INSERT INTO results VALUES ('kavo', 'no_profile', 63, 200, 10221, '', 0)")
+            conn.commit()
+            conn.close()
+
+            store = Store(path)
+            self.assertTrue(store.mark("kavo", True))
+            self.assertEqual(store.rows("confirmed", 0, "", 5)[0]["username"], "kavo")
+            store.close()
+
+
+
+class CoolWordsTest(unittest.TestCase):
+    def test_word_lists_are_clean(self):
+        from tiktok_usernames.words import THEMES, theme_words
+
+        for name in THEMES:
+            words = theme_words(name)
+            self.assertGreaterEqual(len(words), 30, name)
+            for w in words:
+                self.assertTrue(w.isalpha() and w.islower() and is_valid(w), (name, w))
+
+    def test_combos(self):
+        names = generate.combos(["void", "fox", "lunar", "wolf"], limit=100, max_len=8, seed=1)
+        self.assertIn("voidfox", names)
+        self.assertIn("foxvoid", names)
+        self.assertNotIn("lunarwolf", names)  # 9 letters, over max_len
+        self.assertNotIn("foxfox", names)     # never a word with itself
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(len(generate.combos(["void", "fox", "lunar", "wolf"], 3, 8, seed=1)), 3)
+
+    def test_compound_bonus(self):
+        from tiktok_usernames.score import is_compound
+
+        words = {"void", "fox", "lunar", "wolf"}
+        self.assertTrue(is_compound("voidfox", words))
+        self.assertFalse(is_compound("voidfx", words))
+        self.assertGreater(rarity("voidfox", words), rarity("voidfox"))
+        self.assertTrue(is_pronounceable("onyx"))
+
+    def test_build_from_themes(self):
+        from tiktok_usernames import candidates
+        from tiktok_usernames.words import theme_words
+
+        space = set(theme_words("space"))
+        both = candidates.build(candidates.Spec(themes=["space"], combos=True, max_len=9, limit=50, seed=3))
+        names = [n for n, _ in both]
+        singles = [n for n in names if n in space]
+        joined = [n for n in names if n not in space]
+        self.assertTrue(singles and joined)
+        self.assertTrue(all(len(n) <= 9 for n in names))
+        self.assertLessEqual(len(joined), 50)
+
+        only_combos = candidates.build(candidates.Spec(themes=["space"], singles=False, combos=True, limit=20, seed=3))
+        self.assertTrue(all(n not in space for n, _ in only_combos))
+
+        pasted = candidates.build(candidates.Spec(themes=["space"], words=["kavo"], singles=True))
+        self.assertIn("kavo", [n for n, _ in pasted])
+
+
+class CliMarkTest(unittest.TestCase):
+    def test_mark_and_report(self):
+        import contextlib
+        import io
+
+        from tiktok_usernames.checker import CheckResult
+        from tiktok_usernames.cli import main
+
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "c.db"
+            store = Store(db)
+            store.save(CheckResult("kavo", Status.NO_PROFILE, 200, 10221), 63)
+            store.close()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["--db", str(db), "mark", "yes", "@Kavo", "ghost"])
+                main(["--db", str(db), "report"])
+            text = out.getvalue()
+            self.assertIn("@kavo: marked yes", text)
+            self.assertIn("@ghost: not checked yet", text)
+            self.assertIn("confirmed available=1", text)
+            self.assertIn("TikTok code 10221: 1 claimable", text)
+
+    def test_themes_and_generate(self):
+        import contextlib
+        import io
+
+        from tiktok_usernames.cli import main
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["themes"])
+            main(["generate", "--theme", "animals", "--combos", "--no-singles", "--limit", "5", "--seed", "1"])
+        lines = out.getvalue().splitlines()
+        self.assertTrue(any(l.startswith("animals") for l in lines))
+        self.assertEqual(len([l for l in lines if l[:3].strip().isdigit()]), 5)
 
 
 if __name__ == "__main__":

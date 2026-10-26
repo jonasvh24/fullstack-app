@@ -63,7 +63,8 @@
   .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); font-size: 13px; }
   .pill b { font-variant-numeric: tabular-nums; }
   .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
-  .dot.no_profile { background: var(--good); }
+  .dot.no_profile { background: color-mix(in srgb, var(--good) 45%, transparent); box-shadow: inset 0 0 0 1.5px var(--good); }
+  .dot.confirmed { background: var(--good); }
   .dot.taken { background: var(--muted); }
   .dot.unknown { background: var(--warn); }
 
@@ -94,6 +95,9 @@
     padding: 3px 10px; border-radius: 999px; font: 12px var(--mono); cursor: pointer;
   }
   .chip[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .mode { margin-bottom: 4px; }
+  .theme-chip { font-family: inherit; font-size: 13px; padding: 5px 12px; }
+  .theme-chip small { color: inherit; opacity: .65; margin-left: 4px; }
   .check { display: flex; align-items: center; gap: 8px; font-weight: 500; margin-top: 12px; cursor: pointer; }
   details { margin-top: 12px; }
   summary { cursor: pointer; color: var(--muted); font-size: 13px; }
@@ -118,16 +122,26 @@
   .tag { font: 12px var(--mono); padding: 2px 8px; border-radius: 6px; background: var(--neutral-soft); }
   .tag.hi { background: var(--accent-soft); color: var(--accent); }
   .tag.cached { opacity: .5; }
+  .cloud h4 { flex-basis: 100%; margin: 6px 0 0; font-size: 12px; color: var(--muted); font-weight: 600; }
+  .cloud h4:first-child { margin-top: 0; }
 
   .bar { height: 8px; background: var(--field); border-radius: 999px; overflow: hidden; margin: 12px 0 6px; }
   .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .4s ease; }
   .state { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; text-transform: capitalize; }
-  .state.running .dot { background: var(--accent); animation: pulse 1.2s infinite; }
+  .state.running .dot, .state.verifying .dot { background: var(--accent); animation: pulse 1.2s infinite; }
   .state.done .dot { background: var(--good); }
-  .state.blocked .dot, .state.error .dot { background: var(--bad); }
+  .state.blocked .dot, .state.error .dot, .state.failed .dot { background: var(--bad); }
   .state.stopped .dot, .state.idle .dot { background: var(--muted); }
   @keyframes pulse { 50% { opacity: .3; } }
-  @media (prefers-reduced-motion: reduce) { .state.running .dot { animation: none; } .bar > i { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .state.running .dot, .state.verifying .dot { animation: none; } .bar > i { transition: none; } }
+  .verify { margin-top: 12px; border-radius: 8px; padding: 10px 12px; font-size: 13px; background: var(--field); }
+  .verify.ok { background: var(--good-soft); }
+  .verify.bad { background: var(--bad-soft); }
+  .verify b { display: block; margin-bottom: 4px; }
+  .verify.ok b { color: var(--good); }
+  .verify.bad b { color: var(--bad); }
+  .verify ul { margin: 6px 0 0; padding: 0; list-style: none; font: 12px/1.6 var(--mono); }
+  .verify .when { color: var(--muted); font-size: 12px; margin-top: 4px; }
   .feed { list-style: none; margin: 10px 0 0; padding: 0; max-height: 300px; overflow: auto; border-top: 1px solid var(--line); }
   .feed li { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 6px 2px; border-bottom: 1px solid var(--line); font-size: 13px; }
   .feed .u { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; }
@@ -154,6 +168,16 @@
   .badge.no_profile { background: var(--good-soft); color: var(--good); }
   .badge.taken { background: var(--neutral-soft); color: var(--muted); }
   .badge.unknown { background: var(--warn-soft); color: var(--warn); }
+  .badge.claimable { background: var(--good); color: var(--panel); }
+  .badge.rejected { background: var(--bad-soft); color: var(--bad); }
+  .mark { display: inline-flex; gap: 4px; }
+  .mark button { padding: 3px 8px; font-size: 12px; font-weight: 600; border-radius: 6px; }
+  .mark .yes { color: var(--good); }
+  .mark .no { color: var(--bad); }
+  .mark .undo { color: var(--muted); font-weight: 500; }
+  .howto { font-size: 13px; color: var(--muted); margin: -4px 0 12px; }
+  .howto b { color: var(--ink); }
+  .codes { font-size: 12px; color: var(--muted); margin-top: 10px; }
   .empty { text-align: center; color: var(--muted); padding: 32px 8px; }
   .copy { border: 0; background: none; padding: 2px 6px; color: var(--muted); font-size: 12px; font-weight: 500; }
   .copy:hover { color: var(--accent); }
@@ -164,36 +188,53 @@
   <header>
     <div>
       <h1>Rare Handle Finder</h1>
-      <p class="sub">Generate rare TikTok usernames, score them, check which have no public profile.</p>
+      <p class="sub">Find rare TikTok usernames that are available, then confirm them in the app.</p>
     </div>
     <div class="totals" id="totals" aria-label="All-time results"></div>
   </header>
 
-  <p class="note"><b>No profile is not the same as claimable.</b> Banned, deleted and reserved usernames have no public profile either. Confirm each hit in the TikTok app (Edit profile &gt; Username) before relying on it.</p>
+  <p class="note"><b>"Likely available" means no public profile.</b> Banned, deleted and reserved usernames look the same from outside. Try each one in the TikTok app, then mark it Claimable or Not claimable here to build your confirmed list.</p>
 
   <div class="grid">
     <section class="card" aria-labelledby="h-cand">
       <h2 id="h-cand"><span class="step">1</span>Candidates</h2>
 
-      <label for="patterns">Patterns <span class="hint">C consonant · V vowel · L letter · D digit · A letter or digit</span></label>
-      <input type="text" id="patterns" placeholder="CVCV, CVCVC" autocomplete="off" spellcheck="false">
-      <div class="chips" id="patternChips"></div>
+      <div class="tabs mode" role="tablist" aria-label="How to generate names">
+        <button type="button" role="tab" id="modeCool" aria-selected="true">Cool words</button>
+        <button type="button" role="tab" id="modePattern" aria-selected="false">Letter patterns</button>
+      </div>
 
-      <label>All-letter lengths</label>
-      <div class="chips" id="lengthChips"></div>
+      <div id="coolMode">
+        <label>Themes <span class="hint">pick any mix</span></label>
+        <div class="chips" id="themeChips"></div>
+        <label class="check"><input type="checkbox" id="singles" checked> Single words <span class="hint">nova, ember, raven: rare, but mostly taken already</span></label>
+        <label class="check"><input type="checkbox" id="combos" checked> Two-word combos <span class="hint">voidfox, lunarwolf: where the free names are</span></label>
+        <div class="row">
+          <div><label for="maxLen">Max length</label><input type="number" id="maxLen" value="10" min="3" max="24"></div>
+        </div>
+      </div>
 
-      <label class="check"><input type="checkbox" id="repeats"> Repeat shapes <span class="hint">aaa, abab, abba, aabb</span></label>
+      <div id="patternMode" hidden>
+        <label for="patterns">Patterns <span class="hint">C consonant · V vowel · L letter · D digit · A letter or digit</span></label>
+        <input type="text" id="patterns" placeholder="CVCV, CVCVC" autocomplete="off" spellcheck="false">
+        <div class="chips" id="patternChips"></div>
+
+        <label>All-letter lengths</label>
+        <div class="chips" id="lengthChips"></div>
+
+        <label class="check"><input type="checkbox" id="repeats"> Repeat shapes <span class="hint">aaa, abab, abba, aabb</span></label>
+      </div>
 
       <details>
-        <summary>Word list and your own names</summary>
-        <label for="words">Dictionary words <span class="hint">paste a word list; 3–8 letter words become candidates and earn the real-word bonus</span></label>
+        <summary>Your own words and names</summary>
+        <label for="words">Your own words <span class="hint">added to the themes: used on their own and in combos</span></label>
         <textarea id="words" spellcheck="false" placeholder="lion&#10;nova&#10;ember"></textarea>
         <label for="names">Your own names <span class="hint">one per line</span></label>
         <textarea id="names" spellcheck="false" placeholder="kavo&#10;zeyn"></textarea>
       </details>
 
       <div class="row">
-        <div><label for="limit">Per pattern</label><input type="number" id="limit" value="200" min="1" max="5000"></div>
+        <div><label for="limit">Max combos <span class="hint">/ per pattern</span></label><input type="number" id="limit" value="200" min="1" max="5000"></div>
         <div><label for="minRarity">Min rarity</label><input type="number" id="minRarity" value="0" min="0" max="100"></div>
         <div><label for="seed">Seed <span class="hint">optional</span></label><input type="number" id="seed" min="0" placeholder="random"></div>
       </div>
@@ -224,6 +265,7 @@
       <div class="actions">
         <button type="button" class="primary" id="startBtn">Start check</button>
         <button type="button" class="danger" id="stopBtn" disabled>Stop</button>
+        <button type="button" id="verifyBtn">Test connection</button>
         <span class="msg" id="runMsg" role="status"></span>
       </div>
 
@@ -232,6 +274,7 @@
         <span class="state idle" id="state"><span class="dot"></span><span id="stateText">idle</span></span>
         <span class="msg" id="progressText"></span>
       </div>
+      <div class="verify" id="verifyBox" hidden role="status"></div>
       <div class="totals" id="runCounts" style="margin-top:8px"></div>
       <ul class="feed" id="feed" aria-live="polite"></ul>
     </section>
@@ -245,12 +288,14 @@
         <span class="spacer"></span>
         <button type="button" id="csvBtn">Export CSV</button>
       </div>
+      <p class="howto" id="howto"><b>To confirm:</b> Copy a name, open TikTok, go to Profile &gt; Edit profile &gt; Username and paste it. If TikTok accepts it, click <b>Yes</b> (claim it there and then if you want it); if it says the name isn't available, click <b>No</b>.</p>
       <div class="tablewrap">
         <table>
-          <thead><tr><th>Username</th><th>Rarity</th><th>Status</th><th class="num">TikTok code</th><th>Checked (UTC)</th><th></th></tr></thead>
+          <thead><tr><th>Username</th><th>Rarity</th><th>Status</th><th class="num">TikTok code</th><th>Checked (UTC)</th><th>Claimable in the app?</th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
+      <p class="codes" id="codes" hidden></p>
     </section>
   </div>
 </div>
@@ -259,11 +304,12 @@
 const $ = (id) => document.getElementById(id);
 const PATTERNS = ["CVC", "CVCV", "VCVC", "CVCVC", "CVVC", "LLL", "LLLL"];
 const LENGTHS = [2, 3, 4, 5, 6];
-const STATUS_LABEL = { no_profile: "No profile", taken: "Taken", unknown: "Unknown" };
-const TABS = [["no_profile", "No profile"], ["taken", "Taken"], ["unknown", "Unknown"], ["all", "All"]];
+const STATUS_LABEL = { no_profile: "Likely available", taken: "Taken", unknown: "Unknown" };
+const TABS = [["likely", "Likely available"], ["confirmed", "Confirmed available"], ["rejected", "Not claimable"],
+              ["taken", "Taken"], ["unknown", "Unknown"], ["all", "All"]];
 
 const lengths = new Set();
-let tab = "no_profile";
+let tab = "likely";
 let lastDone = -1;
 let pollTimer = null;
 
@@ -298,12 +344,52 @@ function lines(id) {
   return $(id).value.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
 }
 
+let mode = "cool";
+const themes = new Set(["space", "animals", "dark"]);
+
+function setMode(m) {
+  mode = m;
+  $("modeCool").setAttribute("aria-selected", String(m === "cool"));
+  $("modePattern").setAttribute("aria-selected", String(m === "pattern"));
+  $("coolMode").hidden = m !== "cool";
+  $("patternMode").hidden = m !== "pattern";
+}
+
+async function loadThemes() {
+  let list = [];
+  try { list = await api("/api/themes"); } catch { return; }
+  const all = el("button", { type: "button", class: "chip theme-chip", "aria-pressed": "false" }, "All");
+  const chips = list.map((t) => {
+    const chip = el("button", {
+      type: "button", class: "chip theme-chip", "aria-pressed": String(themes.has(t.name)),
+      title: `${t.count} words, e.g. ${t.examples.join(", ")}`,
+    }, t.label, el("small", {}, String(t.count)));
+    chip.addEventListener("click", () => {
+      themes.has(t.name) ? themes.delete(t.name) : themes.add(t.name);
+      chip.setAttribute("aria-pressed", String(themes.has(t.name)));
+      all.setAttribute("aria-pressed", String(themes.size === list.length));
+    });
+    return chip;
+  });
+  all.addEventListener("click", () => {
+    const on = themes.size !== list.length;
+    list.forEach((t, i) => { on ? themes.add(t.name) : themes.delete(t.name); chips[i].setAttribute("aria-pressed", String(on)); });
+    all.setAttribute("aria-pressed", String(on));
+  });
+  $("themeChips").replaceChildren(all, ...chips);
+}
+
 function spec() {
   const seed = $("seed").value.trim();
+  const cool = mode === "cool";
   return {
-    patterns: $("patterns").value.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean),
-    lengths: [...lengths].sort(),
-    repeats: $("repeats").checked,
+    themes: cool ? [...themes] : [],
+    singles: $("singles").checked,
+    combos: cool && $("combos").checked,
+    max_len: Number($("maxLen").value) || 10,
+    patterns: cool ? [] : $("patterns").value.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean),
+    lengths: cool ? [] : [...lengths].sort(),
+    repeats: !cool && $("repeats").checked,
     words: lines("words"),
     names: lines("names"),
     limit: Number($("limit").value) || 200,
@@ -352,23 +438,40 @@ function buildControls() {
   }
 }
 
-let totals = {};
+let views = {};
 function renderTabs() {
-  const all = Object.values(totals).reduce((a, b) => a + b, 0);
   for (const b of $("tabs").children) {
     const k = b.dataset.k;
-    const n = k === "all" ? all : (totals[k] || 0);
-    b.textContent = `${TABS.find((t) => t[0] === k)[1]} ${n}`;
+    b.textContent = `${TABS.find((t) => t[0] === k)[1]} ${views[k] || 0}`;
     b.setAttribute("aria-selected", String(k === tab));
   }
+  $("howto").hidden = tab !== "likely";
 }
 
-function renderTotals(t) {
-  totals = t || {};
-  const box = $("totals");
-  box.replaceChildren(...["no_profile", "taken", "unknown"].map((k) =>
-    el("span", { class: "pill" }, el("span", { class: `dot ${k}` }), `${STATUS_LABEL[k]} `, el("b", {}, String(totals[k] || 0)))));
+function renderTotals(v, codeStats) {
+  views = v || {};
+  const pills = [["confirmed", "Confirmed available", "confirmed"], ["likely", "Likely available", "no_profile"],
+                 ["taken", "Taken", "taken"]];
+  $("totals").replaceChildren(...pills.map(([k, label, dot]) =>
+    el("span", { class: "pill" }, el("span", { class: `dot ${dot}` }), `${label} `, el("b", {}, String(views[k] || 0)))));
   renderTabs();
+
+  // What each TikTok status code turned out to mean, from the names you confirmed.
+  const codes = (codeStats || []).map((c) =>
+    `code ${c.code ?? "none"}: ${c.claimable} claimable, ${c.not_claimable} not`);
+  $("codes").hidden = !codes.length;
+  $("codes").textContent = codes.length ? `From your confirmations so far: ${codes.join(" · ")}.` : "";
+}
+
+async function mark(username, claimable) {
+  try {
+    const s = await api("/api/mark", { username, claimable });
+    renderTotals(s.views, s.code_stats);
+    loadResults();
+  } catch (e) {
+    $("runMsg").className = "msg err";
+    $("runMsg").textContent = e.message;
+  }
 }
 
 async function preview() {
@@ -380,9 +483,14 @@ async function preview() {
     $("pvTodo").textContent = p.to_check.toLocaleString();
     $("pvCached").textContent = p.cached.toLocaleString();
     $("pvEta").textContent = fmtDuration(p.eta_seconds);
-    $("pvCloud").replaceChildren(...p.sample.map((s) =>
-      el("span", { class: `tag${s.rarity >= 70 ? " hi" : ""}${s.cached ? " cached" : ""}`, title: `rarity ${s.rarity}${s.cached ? " · cached" : ""}` },
-        `${s.username} ${s.rarity}`)));
+    const tag = (s) => el("span", { class: `tag${s.rarity >= 70 ? " hi" : ""}${s.cached ? " cached" : ""}`,
+      title: `rarity ${s.rarity}${s.cached ? " · cached" : ""}` }, `${s.username} ${s.rarity}`);
+    const words = p.sample.filter((s) => s.kind === "word");
+    const others = p.sample.filter((s) => s.kind !== "word");
+    const label = mode === "cool" ? "Combos" : "Patterns and names";
+    $("pvCloud").replaceChildren(
+      ...(others.length && words.length ? [el("h4", {}, label)] : []), ...others.map(tag),
+      ...(others.length && words.length ? [el("h4", {}, "Single words")] : []), ...words.map(tag));
     $("preview").hidden = false;
     $("previewMsg").textContent = p.total > p.sample.length ? `Showing the top ${p.sample.length}.` : "";
   } catch (e) {
@@ -413,20 +521,22 @@ async function stop() {
 
 function renderRun(run) {
   const state = run ? run.state : "idle";
-  const running = state === "running";
+  const running = state === "running" || state === "verifying";
   $("startBtn").disabled = running;
   $("stopBtn").disabled = !running;
+  $("verifyBtn").disabled = running || verifying;
   $("state").className = `state ${state}`;
   $("stateText").textContent = state;
   if (!run) return;
 
+  if (run.verify) renderVerify(run.verify);
   const pct = run.total ? (run.done / run.total) * 100 : 100;
   $("progress").style.width = `${pct}%`;
   $("progressText").textContent = running
     ? `${run.done} / ${run.total} · ~${fmtDuration(run.eta_seconds)} left`
     : `${run.done} / ${run.total} checked${run.cached ? ` · ${run.cached} cached` : ""}`;
   if (run.message) {
-    $("runMsg").className = state === "blocked" || state === "error" ? "msg err" : "msg";
+    $("runMsg").className = ["blocked", "error", "failed"].includes(state) ? "msg err" : "msg";
     $("runMsg").textContent = run.message;
   }
   $("runCounts").replaceChildren(...Object.entries(run.counts).map(([k, v]) =>
@@ -440,14 +550,52 @@ function renderRun(run) {
   if (run.done !== lastDone) { lastDone = run.done; loadResults(); }
 }
 
+let verifying = false;
+function renderVerify(v) {
+  const box = $("verifyBox");
+  box.hidden = false;
+  box.className = `verify ${v.ok ? "ok" : "bad"}`;
+  const kids = [
+    el("b", {}, v.ok ? "Connected to TikTok" : "TikTok check failed"),
+    v.explanation,
+    el("ul", {}, ...v.lines.map((l) => el("li", {}, l))),
+  ];
+  if (v.debug_files && v.debug_files.length) {
+    kids.push(el("div", { class: "when" }, `Saved TikTok's response for diagnosis: ${v.debug_files.join(", ")}`));
+  }
+  if (v.at) kids.push(el("div", { class: "when" }, `Tested ${new Date(v.at * 1000).toLocaleTimeString()}`));
+  box.replaceChildren(...kids);
+}
+
+async function verifyNow() {
+  verifying = true;
+  $("verifyBtn").disabled = true;
+  $("startBtn").disabled = true;
+  $("verifyBtn").textContent = "Testing…";
+  $("runMsg").className = "msg";
+  $("runMsg").textContent = "Checking known accounts on TikTok…";
+  try {
+    renderVerify(await api("/api/verify", { delay: Number($("delay").value) || 3 }));
+    $("runMsg").textContent = "";
+  } catch (e) {
+    $("runMsg").className = "msg err";
+    $("runMsg").textContent = e.message;
+  } finally {
+    verifying = false;
+    $("verifyBtn").textContent = "Test connection";
+    poll();
+  }
+}
+
 async function poll() {
   clearTimeout(pollTimer);
   let running = false;
   try {
     const s = await api("/api/status");
-    renderTotals(s.totals);
+    renderTotals(s.views, s.code_stats);
     renderRun(s.run);
-    running = s.run && s.run.state === "running";
+    running = s.run && ["running", "verifying"].includes(s.run.state);
+    if (s.last_verify && !s.run?.verify) renderVerify(s.last_verify);
   } catch (e) {
     $("runMsg").className = "msg err";
     $("runMsg").textContent = "Lost contact with the local server.";
@@ -456,7 +604,7 @@ async function poll() {
 }
 
 function resultsQuery() {
-  const q = new URLSearchParams({ status: tab, min_rarity: $("resMin").value, q: $("search").value.trim(), limit: "500" });
+  const q = new URLSearchParams({ view: tab, min_rarity: $("resMin").value, q: $("search").value.trim(), limit: "500" });
   return q.toString();
 }
 
@@ -466,7 +614,9 @@ async function loadResults() {
   const body = $("rows");
   if (!rows.length) {
     body.replaceChildren(el("tr", {}, el("td", { colspan: "6", class: "empty" },
-      tab === "no_profile" ? "No hits yet. Preview some candidates, then start a check." : "Nothing here yet.")));
+      { likely: "No likely-available names yet. Preview some candidates, then start a check.",
+        confirmed: "Nothing confirmed yet. Try a likely-available name in the TikTok app, then mark it here." }[tab]
+        || "Nothing here yet.")));
     return;
   }
   body.replaceChildren(...rows.map((r) => {
@@ -477,13 +627,25 @@ async function loadResults() {
       try { await navigator.clipboard.writeText(r.username); copy.textContent = "Copied"; } catch { copy.textContent = "Failed"; }
       setTimeout(() => { copy.textContent = "Copy"; }, 1200);
     });
+    const badge = r.confirmed === 1 ? el("span", { class: "badge claimable" }, "Claimable")
+      : r.confirmed === 0 ? el("span", { class: "badge rejected" }, "Not claimable")
+      : el("span", { class: `badge ${r.status}` }, STATUS_LABEL[r.status]);
+    const btn = (cls, text, value, label) => el("button", {
+      type: "button", class: cls, "aria-label": `${label} @${r.username}`, onclick: () => mark(r.username, value),
+    }, text);
+    const actions = el("span", { class: "mark" }, copy);
+    if (r.status === "no_profile" && r.confirmed == null) {
+      actions.append(btn("yes", "Yes", true, "Claimable:"), btn("no", "No", false, "Not claimable:"));
+    } else if (r.confirmed != null) {
+      actions.append(btn("undo", "Undo", null, "Clear confirmation for"));
+    }
     return el("tr", {},
       el("td", {}, link),
       el("td", {}, el("span", { class: "rar" }, el("span", { class: "track" }, Object.assign(el("i"), { style: `width:${r.rarity}%` })), String(r.rarity))),
-      el("td", {}, el("span", { class: `badge ${r.status}` }, STATUS_LABEL[r.status])),
+      el("td", {}, badge),
       el("td", { class: "num" }, r.tiktok_code == null ? "–" : String(r.tiktok_code)),
       el("td", {}, checked),
-      el("td", {}, copy));
+      el("td", {}, actions));
   }));
 }
 
@@ -494,10 +656,14 @@ $("csvBtn").addEventListener("click", () => { window.location.href = `/api/resul
 $("previewBtn").addEventListener("click", preview);
 $("startBtn").addEventListener("click", start);
 $("stopBtn").addEventListener("click", stop);
+$("verifyBtn").addEventListener("click", verifyNow);
 
 buildControls();
 $("patterns").value = "CVCV";
 syncPatternChips();
+$("modeCool").addEventListener("click", () => setMode("cool"));
+$("modePattern").addEventListener("click", () => setMode("pattern"));
+loadThemes();
 poll();
 loadResults();
 </script>

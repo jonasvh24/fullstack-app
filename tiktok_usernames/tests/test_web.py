@@ -8,9 +8,10 @@ import urllib.request
 from pathlib import Path
 
 from tiktok_usernames.tests.test_usernames import MISSING_PAGE, universal_page
+from tiktok_usernames.verify import KNOWN_TAKEN
 from tiktok_usernames.web import make_server
 
-TAKEN = {"kavo", "bako"}
+TAKEN = {"kavo", "bako", *KNOWN_TAKEN}
 
 
 def fake_fetch(url: str) -> tuple[int, str]:
@@ -21,9 +22,11 @@ def fake_fetch(url: str) -> tuple[int, str]:
 
 
 class WebTest(unittest.TestCase):
+    fetch = staticmethod(fake_fetch)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.server = make_server(Path(self.tmp.name) / "w.db", "127.0.0.1", 0, fetch=fake_fetch)
+        self.server = make_server(Path(self.tmp.name) / "w.db", "127.0.0.1", 0, fetch=self.fetch)
         self.base = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
@@ -79,6 +82,25 @@ class WebTest(unittest.TestCase):
         self.assertEqual(self.request("/api/preview", {"lengths": [30]})[0], 400)
         self.assertEqual(self.request("/api/results?status=bogus")[0], 400)
 
+    def test_themes_and_cool_preview(self):
+        status, themes = self.request("/api/themes")
+        self.assertEqual(status, 200)
+        self.assertIn("space", [t["name"] for t in themes])
+
+        status, p = self.request("/api/preview", {"themes": ["space", "animals"], "singles": True,
+                                                  "combos": True, "max_len": 9, "limit": 40})
+        self.assertEqual(status, 200)
+        self.assertGreater(p["total"], 40)
+        self.assertTrue(all(len(s["username"]) <= 9 for s in p["sample"]))
+        from tiktok_usernames.words import words_for
+        known = set(words_for(["space", "animals"]))
+        shown = [s["username"] for s in p["sample"]]
+        self.assertTrue(any(n in known for n in shown), "preview should show single words")
+        self.assertTrue(any(n not in known for n in shown), "preview should show combos too")
+
+        self.assertEqual(self.request("/api/preview", {"themes": ["bogus"]})[0], 400)
+        self.assertEqual(self.request("/api/preview", {"themes": ["space"], "singles": False, "combos": False})[0], 400)
+
     def test_preview(self):
         status, p = self.request("/api/preview", {"patterns": ["LL"], "names": ["kavo"], "limit": 1000})
         self.assertEqual(status, 200)
@@ -90,6 +112,7 @@ class WebTest(unittest.TestCase):
         status, _ = self.request("/api/run", {"names": ["kavo", "zqxv"], "delay": 1, "jitter": 0})
         self.assertEqual(status, 200)
         s = self.wait_for({"done"})
+        self.assertTrue(s["run"]["verify"]["ok"])
         self.assertEqual(s["run"]["counts"], {"taken": 1, "no_profile": 1, "unknown": 0})
         self.assertEqual(s["totals"], {"taken": 1, "no_profile": 1})
 
@@ -100,12 +123,44 @@ class WebTest(unittest.TestCase):
 
         status, csv_body = self.request("/api/results.csv?status=all", raw=True)
         lines = csv_body.decode().strip().splitlines()
-        self.assertEqual(lines[0], "username,status,rarity,tiktok_code,checked_at_utc")
+        self.assertEqual(lines[0], "username,status,claimable_in_app,rarity,tiktok_code,checked_at_utc")
         self.assertEqual(len(lines), 3)
 
-        # Second preview sees both as cached.
+        # Second preview sees both as cached, and a rerun finishes without any requests.
         _, p = self.request("/api/preview", {"names": ["kavo", "zqxv"]})
         self.assertEqual((p["to_check"], p["cached"]), (0, 2))
+        self.request("/api/run", {"names": ["kavo", "zqxv"], "delay": 1})
+        s = self.wait_for({"done"})
+        self.assertIsNone(s["run"]["verify"])
+        self.assertIn("cached", s["run"]["message"])
+
+    def test_mark_claimable_flow(self):
+        self.request("/api/run", {"names": ["zqxv", "zqxw", "kavo"], "delay": 1, "jitter": 0})
+        self.wait_for({"done"})
+
+        status, s = self.request("/api/mark", {"username": "@ZQXV", "claimable": True})
+        self.assertEqual(status, 200)
+        self.assertEqual((s["views"]["confirmed"], s["views"]["likely"]), (1, 1))
+        self.assertEqual(s["code_stats"], [{"code": 10221, "claimable": 1, "not_claimable": 0}])
+
+        _, rows = self.request("/api/results?view=confirmed")
+        self.assertEqual([(r["username"], r["confirmed"]) for r in rows], [("zqxv", 1)])
+
+        _, csv_body = self.request("/api/results.csv?view=all", raw=True)
+        self.assertIn("claimable_in_app", csv_body.decode().splitlines()[0])
+        self.assertIn("zqxv,no_profile,yes", csv_body.decode())
+
+        self.assertEqual(self.request("/api/mark", {"username": "nevercheckedname", "claimable": True})[0], 400)
+        self.assertEqual(self.request("/api/mark", {"username": "zqxv", "claimable": "yes"})[0], 400)
+        self.assertEqual(self.request("/api/results?view=bogus")[0], 400)
+
+    def test_verify_endpoint(self):
+        status, v = self.request("/api/verify", {"delay": 1})
+        self.assertEqual(status, 200)
+        self.assertTrue(v["ok"])
+        self.assertEqual(len(v["lines"]), 3)
+        _, s = self.request("/api/status")
+        self.assertTrue(s["last_verify"]["ok"])
 
     def test_stop_interrupts_delay_and_blocks_concurrent_runs(self):
         names = [f"zz{c}{c}" for c in "abcdefgh"]
@@ -116,6 +171,27 @@ class WebTest(unittest.TestCase):
         s = self.wait_for({"stopped"}, timeout=5)
         self.assertLess(time.time() - started, 5)  # did not sit out the 30s delay
         self.assertLess(s["run"]["done"], len(names))
+
+
+
+class BlockedWebTest(WebTest):
+    """Same server, but TikTok answers every request with its bot check."""
+
+    fetch = staticmethod(lambda url: (200, '<html><div id="cs" class="x"></div>Please wait...</html>'))
+
+    def test_run_refuses_to_start_when_verify_fails(self):
+        self.request("/api/run", {"names": ["kavo", "zqxv"], "delay": 1, "jitter": 0})
+        s = self.wait_for({"failed"})
+        self.assertFalse(s["run"]["verify"]["ok"])
+        self.assertIn("not serving", s["run"]["verify"]["explanation"])
+        self.assertEqual(s["run"]["done"], 0)
+        self.assertEqual(s["totals"], {})  # nothing was recorded as available
+
+    # The inherited happy-path tests assume a working TikTok; skip them here.
+    test_run_to_completion_then_results_and_csv = None
+    test_stop_interrupts_delay_and_blocks_concurrent_runs = None
+    test_verify_endpoint = None
+    test_mark_claimable_flow = None
 
 
 if __name__ == "__main__":

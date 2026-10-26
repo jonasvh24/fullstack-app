@@ -5,6 +5,8 @@ digits, underscores and periods. A handle cannot end with a period. We also
 reject consecutive periods: TikTok refuses them in practice, and checking
 names that can never be registered wastes requests.
 """
+from __future__ import annotations
+
 import re
 
 MIN_LEN = 2

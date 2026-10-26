@@ -1,12 +1,16 @@
 # tiktok_usernames
 
 Generates rare TikTok handle candidates, scores them for rarity, and checks
-each one for a public profile. Python 3.10+, standard library only.
+each one for a public profile. Python 3.9+ (the version built into macOS works), standard library only.
 
 ## Quick start
 
 ```bash
-# See what you'd check, rarest first. No network calls.
+# Cool words: themed single words and two-word combos (voidfox, lunarwolf).
+python -m tiktok_usernames themes
+python -m tiktok_usernames generate --theme space --theme animals --combos --max-len 9
+
+# Or letter patterns. No network calls either way.
 python -m tiktok_usernames generate --pattern CVCV --length 3 --repeats --limit 100
 
 # Check them. Results go to tiktok_usernames.db; reruns skip cached names.
@@ -17,7 +21,37 @@ python -m tiktok_usernames report --top 30 --min-rarity 60
 
 # Or do all of the above in the browser.
 python -m tiktok_usernames serve
+
+# Prove checks read real TikTok from your connection (3 requests).
+python -m tiktok_usernames verify
+
+# Record what the TikTok app said when you tried a name.
+python -m tiktok_usernames mark yes kavo
+python -m tiktok_usernames mark no lumi
 ```
+
+On macOS use `python3` in place of `python`.
+
+## Verified against real accounts
+
+Every run starts by checking two accounts that certainly exist (`@tiktok`,
+`@khaby.lame`, `@mrbeast` and similar) and one random 18-character name
+that certainly does not. The run only starts if the real accounts come
+back `taken` and the random one `no_profile`. Otherwise it stops and says
+why:
+
+| Verify result | Meaning |
+|---|---|
+| Real accounts `unknown` | TikTok is not serving profiles to your connection: bot check, login wall or network block. Wait, or try another network. |
+| Real accounts `no_profile` | TikTok changed its page format. The page it returned is saved in `tiktok_debug/`; send it over so the parser can be updated. |
+| Random name `taken` | The parser is misreading pages. Same fix. |
+
+Run it on its own with `verify`, or with the **Test connection** button in
+the web UI. `check --skip-verify` bypasses it; there is rarely a reason to.
+
+The parser reads the same embedded data (`__UNIVERSAL_DATA_FOR_REHYDRATION__`
+> `webapp.user-detail`) and treats status 10222 as a private, taken account,
+matching what yt-dlp's TikTok extractor relies on.
 
 ## Web UI
 
@@ -39,10 +73,35 @@ only, no build step, works offline. It rejects requests carrying a foreign
 cannot drive it. `--host 0.0.0.0` exposes it to your network; only do that
 on a network you trust, as there is no login.
 
+## Cool words
+
+The default mode in the web UI. Pick themes, then single words, two-word
+combos, or both:
+
+| Theme | Examples |
+|---|---|
+| Space | nova, orbit, lunar, nebula |
+| Nature | ember, fern, frost, tide |
+| Mythology | odin, loki, kraken, phoenix |
+| Dark | shadow, noir, onyx, phantom |
+| Animals | wolf, fox, lynx, raven |
+| Tech | pixel, glitch, neon, cyber |
+| Colours | crimson, azure, jade, cobalt |
+| Vibes | lucid, velvet, hazy, aura |
+
+Single cool words are rare and almost all taken. Two-word combos such as
+`hexwolf`, `nyxvoid` or `thorfox` are where available names turn up, and
+they score a bonus for being two real words. Your own pasted words join
+both the singles and the combos. `--max-len` (default 10) caps the length.
+
+CLI: `--theme NAME` (repeatable, or `--theme all`), `--combos`,
+`--no-singles`, `--max-len N`; `themes` lists them.
+
 ## Candidate sources
 
 | Flag | What it generates | Example |
 |---|---|---|
+| `--theme T` | curated cool words for a theme; add `--combos` for two-word joins | `--theme dark --combos` -> `nyxvoid` |
 | `--length N` | all-letter names of length N | `--length 4` -> `qzor` |
 | `--pattern P` | `C` consonant, `V` vowel, `L` letter, `D` digit, `A` letter-or-digit, anything else literal | `CVCV` -> `kavo`, `x_VC` -> `x_ak` |
 | `--wordlist F` | dictionary words 3-8 letters; also enables the real-word bonus | `--wordlist words.txt` |
@@ -70,16 +129,32 @@ requests on the names that matter.
 
 | Status | Meaning |
 |---|---|
-| `taken` | TikTok returned a user for that handle, private accounts included. |
+| `taken` | TikTok returned a user for that handle, or its private-account code (10222). |
 | `no_profile` | TikTok answered cleanly with no user. **Candidate only.** |
-| `unknown` | Bot wall, captcha, network error or a page layout change. Never treated as available, always rechecked. |
+| `unknown` | TikTok's bot check, a login redirect, a network error or a page layout change. Never treated as available, always rechecked. |
+
+## From "likely" to "confirmed" available
 
 `no_profile` is not the same as claimable. Banned, deleted and
 TikTok-reserved handles also have no public profile but cannot be
 registered. The `tiktok_code` column records TikTok's own status code for each
-hit: once you have confirmed a few handles in the app, the code tells you
-which ones were genuinely free, and you can filter on it. The last step is
-always the app: Profile > Edit profile > Username.
+hit. The last step is always the app: Profile > Edit profile > Username,
+paste the name, see whether TikTok accepts it.
+
+The definitive check only exists inside a logged-in TikTok session, behind
+request signatures generated by TikTok's anti-bot code. This tool does not
+forge those or automate your account: that is what gets accounts banned.
+Instead, record what the app said:
+
+- **Web UI:** each likely-available row has **Yes** / **No** buttons.
+  Confirmed names move to the *Confirmed available* tab; refused ones to
+  *Not claimable*. **Undo** clears it.
+- **CLI:** `mark yes NAME…`, `mark no NAME…`, `mark clear NAME…`.
+
+Confirmations survive rechecks, except when a recheck finds the name has
+since been taken. Over time the UI and `report` show what each TikTok status
+code meant in practice ("code 10221: 9 claimable, 1 not"), so you learn how
+far to trust a fresh "likely available".
 
 ## Rate limits
 
@@ -91,7 +166,8 @@ The checker is built to stay under the radar honestly rather than evade it:
 - stops the run after 5 unusable responses in a row;
 - refuses a `--delay` under 1s.
 
-No proxy rotation, no captcha solving. If you get blocked, wait and rerun
+It keeps TikTok's session cookies between requests as a browser would. No
+proxy rotation, no faked TLS fingerprints, no solving TikTok's bot challenge. If you get blocked, wait and rerun
 with a longer delay. At the defaults, expect about 950 checks per hour.
 
 ## Tests

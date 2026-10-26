@@ -8,6 +8,8 @@ Host header is not the address it was started on (blocks DNS-rebinding
 pages) and only accepts JSON POST bodies (a cross-origin page cannot send
 those without a CORS preflight, which we never answer).
 """
+from __future__ import annotations
+
 import csv
 import io
 import json
@@ -19,10 +21,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import candidates
+from . import candidates, words as wordlists
 from .checker import Blocked, Checker, Fetcher, Status, http_fetch
-from .rules import MAX_LEN
-from .store import Store
+from .rules import MAX_LEN, is_valid, normalise
+from .store import VIEWS, Store
+from .verify import verify
 
 STATIC = Path(__file__).parent / "static"
 MAX_BODY = 2_000_000
@@ -69,6 +72,10 @@ def parse_spec(body: dict) -> candidates.Spec:
     lengths = body.get("lengths") or []
     if not isinstance(lengths, list) or not all(isinstance(n, int) and 2 <= n <= 8 for n in lengths):
         raise BadRequest("lengths must be whole numbers from 2 to 8")
+    themes = _strings(body, "themes", len(wordlists.THEMES))
+    unknown = [t for t in themes if t not in wordlists.THEMES]
+    if unknown:
+        raise BadRequest(f"unknown theme: {', '.join(unknown)}")
 
     spec = candidates.Spec(
         patterns=patterns,
@@ -76,12 +83,18 @@ def parse_spec(body: dict) -> candidates.Spec:
         words=_strings(body, "words", 200_000),
         repeats=bool(body.get("repeats")),
         names=_strings(body, "names", MAX_CANDIDATES),
+        themes=themes,
+        singles=bool(body.get("singles", True)),
+        combos=bool(body.get("combos", False)),
+        max_len=_num(body, "max_len", 10, 3, MAX_LEN),
         limit=_num(body, "limit", 200, 1, 5000),
         min_rarity=_num(body, "min_rarity", 0, 0, 100),
         seed=_num(body, "seed", None, 0, 2**31),
     )
-    if not (spec.patterns or spec.lengths or spec.words or spec.repeats or spec.names):
-        raise BadRequest("Add at least one pattern, length, word, repeat shape or name.")
+    if not (spec.patterns or spec.lengths or spec.words or spec.repeats or spec.names or spec.themes):
+        raise BadRequest("Pick at least one theme, or add a pattern, length, word or name.")
+    if (spec.themes or spec.words) and not (spec.singles or spec.combos):
+        raise BadRequest("Choose single words, two-word combos, or both.")
     return spec
 
 
@@ -91,7 +104,8 @@ class Run:
         self.cached = cached
         self.delay = delay
         self.jitter = jitter
-        self.state = "running"
+        self.state = "verifying"
+        self.verify: dict | None = None
         self.message = ""
         self.done = 0
         self.counts = {s.value: 0 for s in Status}
@@ -99,6 +113,10 @@ class Run:
         self.started = time.time()
         self.finished: float | None = None
         self.stop_event = threading.Event()
+
+    @property
+    def active(self) -> bool:
+        return self.state in ("verifying", "running")
 
     def snapshot(self) -> dict:
         remaining = len(self.todo) - self.done
@@ -109,10 +127,11 @@ class Run:
             "done": self.done,
             "cached": self.cached,
             "counts": self.counts,
-            "eta_seconds": round(remaining * (self.delay + self.jitter / 2)) if self.state == "running" else 0,
+            "eta_seconds": round(remaining * (self.delay + self.jitter / 2)) if self.active else 0,
             "started": self.started,
             "finished": self.finished,
             "feed": list(self.feed),
+            "verify": self.verify,
         }
 
 
@@ -123,6 +142,8 @@ class App:
         self.lock = threading.Lock()
         self.run: Run | None = None
         self.thread: threading.Thread | None = None
+        self.last_verify: dict | None = None
+        self.debug_dir = db.resolve().parent / "tiktok_debug"
         Store(db).close()  # create the schema up front
 
     def _split(self, spec: candidates.Spec, max_age_hours: float) -> tuple[list, list]:
@@ -140,15 +161,27 @@ class App:
     def preview(self, body: dict) -> dict:
         delay = _num(body, "delay", 3.0, 1.0, 120.0, float)
         jitter = _num(body, "jitter", 1.5, 0.0, 60.0, float)
-        todo, fresh = self._split(parse_spec(body), _num(body, "max_age_hours", 72.0, 0.0, 10_000.0, float))
+        spec = parse_spec(body)
+        todo, fresh = self._split(spec, _num(body, "max_age_hours", 72.0, 0.0, 10_000.0, float))
         cached = {n for n, _ in fresh}
-        sample = sorted(todo + fresh, key=lambda s: (-s[1], len(s[0]), s[0]))[:PREVIEW_SAMPLE]
+        ranked = sorted(todo + fresh, key=lambda s: (-s[1], len(s[0]), s[0]))
+        # Single words always outscore combos, so a plain top-N would hide every
+        # combo. Show the best of each kind instead.
+        single_words = set(wordlists.words_for(spec.themes)) | {w.lower() for w in spec.words}
+        singles = [s for s in ranked if s[0] in single_words]
+        others = [s for s in ranked if s[0] not in single_words]
+        if singles and others:
+            half = PREVIEW_SAMPLE // 2
+            sample = singles[:max(half, PREVIEW_SAMPLE - len(others))] + others[:max(half, PREVIEW_SAMPLE - len(singles))]
+        else:
+            sample = ranked[:PREVIEW_SAMPLE]
         return {
             "total": len(todo) + len(fresh),
             "to_check": len(todo),
             "cached": len(fresh),
             "eta_seconds": round(len(todo) * (delay + jitter / 2)),
-            "sample": [{"username": n, "rarity": r, "cached": n in cached} for n, r in sample],
+            "sample": [{"username": n, "rarity": r, "cached": n in cached,
+                        "kind": "word" if n in single_words else "other"} for n, r in sample],
         }
 
     def start(self, body: dict) -> dict:
@@ -156,7 +189,7 @@ class App:
         jitter = _num(body, "jitter", 1.5, 0.0, 60.0, float)
         todo, fresh = self._split(parse_spec(body), _num(body, "max_age_hours", 72.0, 0.0, 10_000.0, float))
         with self.lock:
-            if self.run and self.run.state == "running":
+            if self.run and self.run.active:
                 raise BadRequest("A run is already in progress. Stop it first.")
             run = Run(todo, len(fresh), delay, jitter)
             self.run = run
@@ -166,17 +199,46 @@ class App:
 
     def stop(self) -> dict:
         with self.lock:
-            if self.run and self.run.state == "running":
+            if self.run and self.run.active:
                 self.run.stop_event.set()
             return self.status()
 
     def status(self) -> dict:
         store = Store(self.db)
         try:
-            counts = store.counts()
+            counts, views, codes = store.counts(), store.view_counts(), store.code_stats()
         finally:
             store.close()
-        return {"run": self.run.snapshot() if self.run else None, "totals": counts}
+        return {"run": self.run.snapshot() if self.run else None, "totals": counts,
+                "views": views, "code_stats": codes, "last_verify": self.last_verify}
+
+    def mark(self, body: dict) -> dict:
+        name = normalise(str(body.get("username", "")))
+        claimable = body.get("claimable")
+        if not is_valid(name):
+            raise BadRequest("username is not a valid TikTok handle")
+        if claimable not in (True, False, None):
+            raise BadRequest("claimable must be true, false or null")
+        store = Store(self.db)
+        try:
+            if not store.mark(name, claimable):
+                raise BadRequest(f"@{name} hasn't been checked yet")
+        finally:
+            store.close()
+        return self.status()
+
+    def verify_now(self, body: dict) -> dict:
+        """Standalone connection test from the UI. Blocks for ~2 delays."""
+        delay = _num(body, "delay", 3.0, 1.0, 120.0, float)
+        with self.lock:
+            if self.run and self.run.active:
+                raise BadRequest("A run is in progress; it verified when it started.")
+        report = verify(Checker(delay=delay, jitter=0, fetch=self.fetch), debug_dir=self.debug_dir)
+        self._remember(report.as_dict())
+        return self.last_verify
+
+    def _remember(self, report: dict) -> None:
+        self.last_verify = {**report, "at": time.time()}
 
     def _work(self, run: Run) -> None:
         def fetch(url: str) -> tuple[int, str]:
@@ -203,6 +265,18 @@ class App:
             })
 
         try:
+            if not run.todo:
+                run.state = "done"
+                run.message = "Nothing to check: every candidate is cached."
+                return
+            report = verify(checker, debug_dir=self.debug_dir).as_dict()
+            run.verify = report
+            self._remember(report)
+            if not report["ok"]:
+                run.state = "failed"
+                run.message = "Not started: the TikTok check failed. Details below."
+                return
+            run.state = "running"
             for name, _ in run.todo:
                 if run.stop_event.is_set():
                     raise _Stopped
@@ -224,17 +298,15 @@ class App:
             store.close()
 
     def results(self, query: dict[str, list[str]]) -> list[dict]:
-        status_raw = (query.get("status") or ["no_profile"])[0]
-        try:
-            status = None if status_raw == "all" else Status(status_raw)
-        except ValueError:
-            raise BadRequest("status must be no_profile, taken, unknown or all") from None
+        view = (query.get("view") or query.get("status") or ["likely"])[0]
+        if view not in VIEWS:
+            raise BadRequest(f"view must be one of: {', '.join(VIEWS)}")
         min_rarity = _num({"m": (query.get("min_rarity") or [0])[0]}, "m", 0, 0, 100)
         limit = _num({"l": (query.get("limit") or [500])[0]}, "l", 500, 1, 100_000)
         search = (query.get("q") or [""])[0].strip().lower()[:MAX_LEN]
         store = Store(self.db)
         try:
-            return store.rows(status, min_rarity, search, limit)
+            return store.rows(view, min_rarity, search, limit)
         finally:
             store.close()
 
@@ -298,6 +370,7 @@ def make_handler(app: App, allowed_hosts: set[str]):
             self._dispatch({
                 "/": lambda q: self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8"),
                 "/api/status": lambda q: self._json(app.status()),
+                "/api/themes": lambda q: self._json(wordlists.catalogue()),
                 "/api/results": lambda q: self._json(app.results(q)),
                 "/api/results.csv": self._csv,
             })
@@ -307,16 +380,20 @@ def make_handler(app: App, allowed_hosts: set[str]):
                 "/api/preview": lambda q: self._json(app.preview(self._body())),
                 "/api/run": lambda q: self._json(app.start(self._body())),
                 "/api/run/stop": lambda q: (self._body(), self._json(app.stop())),
+                "/api/verify": lambda q: self._json(app.verify_now(self._body())),
+                "/api/mark": lambda q: self._json(app.mark(self._body())),
             })
 
         def _csv(self, query) -> None:
             rows = app.results(query)
             buf = io.StringIO()
             writer = csv.writer(buf)
-            writer.writerow(["username", "status", "rarity", "tiktok_code", "checked_at_utc"])
+            writer.writerow(["username", "status", "claimable_in_app", "rarity", "tiktok_code", "checked_at_utc"])
+            claimable = {1: "yes", 0: "no", None: ""}
             for r in rows:
                 checked = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(r["checked_at"]))
-                writer.writerow([r["username"], r["status"], r["rarity"], r["tiktok_code"], checked])
+                writer.writerow([r["username"], r["status"], claimable[r["confirmed"]],
+                                 r["rarity"], r["tiktok_code"], checked])
             self._send(200, buf.getvalue().encode(), "text/csv; charset=utf-8",
                        {"Content-Disposition": 'attachment; filename="tiktok_usernames.csv"'})
 

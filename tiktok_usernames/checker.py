@@ -3,35 +3,51 @@
 We fetch https://www.tiktok.com/@<name> and read the JSON TikTok embeds for
 its own front end. Three outcomes:
 
-    TAKEN       the page carries a user object: someone holds the handle.
+    TAKEN       the page carries a user object, or TikTok's private-account
+                code (10222): someone holds the handle.
     NO_PROFILE  TikTok answered cleanly with no user. The handle is a
                 candidate, not a guarantee: banned, deleted and reserved
                 handles also have no public profile but cannot be claimed.
                 Confirm in the app (Edit profile > Username) before relying
                 on it.
-    UNKNOWN     anything else: bot wall, captcha, layout change, network
-                error. Never counted as available.
+    UNKNOWN     anything else: TikTok's bot check, a login redirect, a layout
+                change, a network error. Never counted as available.
+
+The page structure and status codes match what yt-dlp's TikTok extractor
+reads from live pages. verify.py proves it on your own connection by
+checking accounts that certainly exist before any run is trusted.
 
 The checker is deliberately polite: one request at a time, a delay with
 jitter between requests, exponential backoff on 429, and a hard stop when
-TikTok keeps refusing. It does not rotate proxies or solve captchas; if
-TikTok blocks you, slow down or stop.
+TikTok keeps refusing. It keeps session cookies like a browser would, but
+does not rotate proxies, fake TLS fingerprints or solve TikTok's bot
+challenge; if TikTok blocks you, slow down or stop.
 """
+from __future__ import annotations
+
 import json
 import random
 import re
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from http.cookiejar import CookieJar
+from urllib.parse import urlparse
 from enum import Enum
 from typing import Callable
 
 PROFILE_URL = "https://www.tiktok.com/@{name}"
 USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/130.0 Safari/537.36"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 )
+
+PRIVATE_ACCOUNT = 10222
+# Synthetic HTTP status for "TikTok redirected us to its login page".
+LOGIN_REDIRECT = 401
+# Markers of TikTok's proof-of-work bot check, served in place of the profile.
+_CHALLENGE_MARKERS = ('id="cs"', 'id="wci"', "Please wait...")
 
 _SCRIPT_RE = re.compile(
     r'<script[^>]*id="(__UNIVERSAL_DATA_FOR_REHYDRATION__|SIGI_STATE)"[^>]*>(.*?)</script>',
@@ -52,6 +68,8 @@ class CheckResult:
     http_status: int | None = None
     tiktok_code: int | None = None
     detail: str = ""
+    # Raw page, kept in memory only so a failed verify can save it for diagnosis.
+    page: str = field(default="", repr=False)
 
 
 class Blocked(RuntimeError):
@@ -65,7 +83,9 @@ class Blocked(RuntimeError):
 def parse_profile_html(username: str, html: str) -> tuple[Status, int | None, str]:
     match = _SCRIPT_RE.search(html)
     if not match:
-        return Status.UNKNOWN, None, "no embedded data (bot wall or layout change)"
+        if any(marker in html for marker in _CHALLENGE_MARKERS):
+            return Status.UNKNOWN, None, "TikTok served its bot check instead of the profile"
+        return Status.UNKNOWN, None, "no profile data in the page (layout change or block)"
 
     kind, raw = match.groups()
     try:
@@ -87,18 +107,25 @@ def parse_profile_html(username: str, html: str) -> tuple[Status, int | None, st
     user = ((detail.get("userInfo") or {}).get("user")) or {}
     unique_id = str(user.get("uniqueId", "")).lower()
 
-    # Private accounts still return a user object, so presence of the user
-    # is the test, not the status code.
     if unique_id:
         if unique_id == username:
             return Status.TAKEN, code, ""
         return Status.UNKNOWN, code, f"page returned a different user: {unique_id}"
+    # Private accounts can come back with no user object at all; the code is
+    # the only sign the handle is held.
+    if code == PRIVATE_ACCOUNT:
+        return Status.TAKEN, code, "private account"
     if code not in (None, 0):
         return Status.NO_PROFILE, code, detail.get("statusMsg") or ""
     return Status.UNKNOWN, code, "status 0 but no user object"
 
 
 Fetcher = Callable[[str], tuple[int, str]]
+
+
+# One cookie jar per process: TikTok sets session cookies on the first page
+# and expects them back, as any browser would send them.
+_opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(CookieJar()))
 
 
 def http_fetch(url: str, timeout: float = 15.0) -> tuple[int, str]:
@@ -111,7 +138,9 @@ def http_fetch(url: str, timeout: float = 15.0) -> tuple[int, str]:
         },
     )
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _opener.open(req, timeout=timeout) as resp:
+            if urlparse(resp.geturl()).path.rstrip("/") == "/login":
+                return LOGIN_REDIRECT, ""
             return resp.status, resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as err:
         return err.code, err.read().decode("utf-8", errors="replace")
@@ -143,7 +172,7 @@ class Checker:
         self._last_request = time.monotonic()
 
     def check(self, username: str) -> CheckResult:
-        result = self._check_once(username)
+        result = self.check_once(username)
         if result.status is Status.UNKNOWN:
             self._consecutive_unknown += 1
             if self._consecutive_unknown >= self.max_consecutive_unknown:
@@ -157,7 +186,8 @@ class Checker:
             self._consecutive_unknown = 0
         return result
 
-    def _check_once(self, username: str) -> CheckResult:
+    def check_once(self, username: str) -> CheckResult:
+        """One paced check with 429 backoff, outside the blocked-run counter."""
         backoff = max(self.delay, 1.0) * 4
         for attempt in range(self.max_retries + 1):
             self._pace()
@@ -170,12 +200,14 @@ class Checker:
                 self._sleep(backoff)
                 backoff *= 2
                 continue
+            if http_status == LOGIN_REDIRECT:
+                return CheckResult(username, Status.UNKNOWN, http_status, None, "TikTok redirected to its login page")
             if http_status == 404:
                 return CheckResult(username, Status.NO_PROFILE, http_status, None, "http 404")
             if http_status != 200:
                 return CheckResult(username, Status.UNKNOWN, http_status, None, f"http {http_status}")
 
             status, code, detail = parse_profile_html(username, body)
-            return CheckResult(username, status, http_status, code, detail)
+            return CheckResult(username, status, http_status, code, detail, page=body)
 
         return CheckResult(username, Status.UNKNOWN, 429, None, "rate limited after retries")
