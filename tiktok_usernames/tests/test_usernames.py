@@ -222,9 +222,88 @@ class StoreTest(unittest.TestCase):
             self.assertTrue(store.is_fresh("kavo", 1))
             self.assertFalse(store.is_fresh("zzz", 1))  # unknowns always get rechecked
             self.assertFalse(store.is_fresh("nope", 1))
-            self.assertEqual(store.top(Status.NO_PROFILE, 10)[0][:3], ("kavo", 63, 10221))
+            row = store.rows("likely", 0, "", 10)[0]
+            self.assertEqual((row["username"], row["rarity"], row["tiktok_code"]), ("kavo", 63, 10221))
             self.assertEqual(store.counts(), {"no_profile": 1, "unknown": 1})
             store.close()
+
+    def test_confirmations(self):
+        from tiktok_usernames.checker import CheckResult
+
+        with tempfile.TemporaryDirectory() as d:
+            store = Store(Path(d) / "t.db")
+            for name, code in [("kavo", 10221), ("lumi", 10221), ("zeyn", 10202)]:
+                store.save(CheckResult(name, Status.NO_PROFILE, 200, code), 63)
+            store.save(CheckResult("bako", Status.TAKEN, 200, 0), 63)
+
+            self.assertTrue(store.mark("kavo", True))
+            self.assertTrue(store.mark("zeyn", False))
+            self.assertFalse(store.mark("never", True))  # never checked
+
+            names = lambda view: [r["username"] for r in store.rows(view, 0, "", 50)]
+            self.assertEqual(names("confirmed"), ["kavo"])
+            self.assertEqual(names("rejected"), ["zeyn"])
+            self.assertEqual(names("likely"), ["lumi"])
+            counts = store.view_counts()
+            self.assertEqual((counts["confirmed"], counts["likely"], counts["taken"], counts["all"]), (1, 1, 1, 4))
+            self.assertEqual(store.code_stats(), [
+                {"code": 10202, "claimable": 0, "not_claimable": 1},
+                {"code": 10221, "claimable": 1, "not_claimable": 0},
+            ])
+
+            # A recheck that still finds no profile keeps the confirmation...
+            store.save(CheckResult("kavo", Status.NO_PROFILE, 200, 10221), 63)
+            self.assertEqual(names("confirmed"), ["kavo"])
+            # ...but once someone takes the name, the confirmation is stale and cleared.
+            store.save(CheckResult("kavo", Status.TAKEN, 200, 0), 63)
+            self.assertEqual(names("confirmed"), [])
+
+            store.mark("zeyn", None)
+            self.assertEqual(names("rejected"), [])
+            store.close()
+
+    def test_migrates_old_database(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "old.db"
+            conn = sqlite3.connect(path)
+            conn.execute("CREATE TABLE results (username TEXT PRIMARY KEY, status TEXT NOT NULL, "
+                         "rarity INTEGER NOT NULL, http_status INTEGER, tiktok_code INTEGER, "
+                         "detail TEXT, checked_at REAL NOT NULL)")
+            conn.execute("INSERT INTO results VALUES ('kavo', 'no_profile', 63, 200, 10221, '', 0)")
+            conn.commit()
+            conn.close()
+
+            store = Store(path)
+            self.assertTrue(store.mark("kavo", True))
+            self.assertEqual(store.rows("confirmed", 0, "", 5)[0]["username"], "kavo")
+            store.close()
+
+
+
+class CliMarkTest(unittest.TestCase):
+    def test_mark_and_report(self):
+        import contextlib
+        import io
+
+        from tiktok_usernames.checker import CheckResult
+        from tiktok_usernames.cli import main
+
+        with tempfile.TemporaryDirectory() as d:
+            db = Path(d) / "c.db"
+            store = Store(db)
+            store.save(CheckResult("kavo", Status.NO_PROFILE, 200, 10221), 63)
+            store.close()
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                main(["--db", str(db), "mark", "yes", "@Kavo", "ghost"])
+                main(["--db", str(db), "report"])
+            text = out.getvalue()
+            self.assertIn("@kavo: marked yes", text)
+            self.assertIn("@ghost: not checked yet", text)
+            self.assertIn("confirmed available=1", text)
+            self.assertIn("TikTok code 10221: 1 claimable", text)
 
 
 if __name__ == "__main__":

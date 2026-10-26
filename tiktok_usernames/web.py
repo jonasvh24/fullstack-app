@@ -23,8 +23,8 @@ from urllib.parse import parse_qs, urlparse
 
 from . import candidates
 from .checker import Blocked, Checker, Fetcher, Status, http_fetch
-from .rules import MAX_LEN
-from .store import Store
+from .rules import MAX_LEN, is_valid, normalise
+from .store import VIEWS, Store
 from .verify import verify
 
 STATIC = Path(__file__).parent / "static"
@@ -184,11 +184,26 @@ class App:
     def status(self) -> dict:
         store = Store(self.db)
         try:
-            counts = store.counts()
+            counts, views, codes = store.counts(), store.view_counts(), store.code_stats()
         finally:
             store.close()
         return {"run": self.run.snapshot() if self.run else None, "totals": counts,
-                "last_verify": self.last_verify}
+                "views": views, "code_stats": codes, "last_verify": self.last_verify}
+
+    def mark(self, body: dict) -> dict:
+        name = normalise(str(body.get("username", "")))
+        claimable = body.get("claimable")
+        if not is_valid(name):
+            raise BadRequest("username is not a valid TikTok handle")
+        if claimable not in (True, False, None):
+            raise BadRequest("claimable must be true, false or null")
+        store = Store(self.db)
+        try:
+            if not store.mark(name, claimable):
+                raise BadRequest(f"@{name} hasn't been checked yet")
+        finally:
+            store.close()
+        return self.status()
 
     def verify_now(self, body: dict) -> dict:
         """Standalone connection test from the UI. Blocks for ~2 delays."""
@@ -261,17 +276,15 @@ class App:
             store.close()
 
     def results(self, query: dict[str, list[str]]) -> list[dict]:
-        status_raw = (query.get("status") or ["no_profile"])[0]
-        try:
-            status = None if status_raw == "all" else Status(status_raw)
-        except ValueError:
-            raise BadRequest("status must be no_profile, taken, unknown or all") from None
+        view = (query.get("view") or query.get("status") or ["likely"])[0]
+        if view not in VIEWS:
+            raise BadRequest(f"view must be one of: {', '.join(VIEWS)}")
         min_rarity = _num({"m": (query.get("min_rarity") or [0])[0]}, "m", 0, 0, 100)
         limit = _num({"l": (query.get("limit") or [500])[0]}, "l", 500, 1, 100_000)
         search = (query.get("q") or [""])[0].strip().lower()[:MAX_LEN]
         store = Store(self.db)
         try:
-            return store.rows(status, min_rarity, search, limit)
+            return store.rows(view, min_rarity, search, limit)
         finally:
             store.close()
 
@@ -345,16 +358,19 @@ def make_handler(app: App, allowed_hosts: set[str]):
                 "/api/run": lambda q: self._json(app.start(self._body())),
                 "/api/run/stop": lambda q: (self._body(), self._json(app.stop())),
                 "/api/verify": lambda q: self._json(app.verify_now(self._body())),
+                "/api/mark": lambda q: self._json(app.mark(self._body())),
             })
 
         def _csv(self, query) -> None:
             rows = app.results(query)
             buf = io.StringIO()
             writer = csv.writer(buf)
-            writer.writerow(["username", "status", "rarity", "tiktok_code", "checked_at_utc"])
+            writer.writerow(["username", "status", "claimable_in_app", "rarity", "tiktok_code", "checked_at_utc"])
+            claimable = {1: "yes", 0: "no", None: ""}
             for r in rows:
                 checked = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(r["checked_at"]))
-                writer.writerow([r["username"], r["status"], r["rarity"], r["tiktok_code"], checked])
+                writer.writerow([r["username"], r["status"], claimable[r["confirmed"]],
+                                 r["rarity"], r["tiktok_code"], checked])
             self._send(200, buf.getvalue().encode(), "text/csv; charset=utf-8",
                        {"Content-Disposition": 'attachment; filename="tiktok_usernames.csv"'})
 

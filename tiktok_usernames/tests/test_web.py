@@ -104,7 +104,7 @@ class WebTest(unittest.TestCase):
 
         status, csv_body = self.request("/api/results.csv?status=all", raw=True)
         lines = csv_body.decode().strip().splitlines()
-        self.assertEqual(lines[0], "username,status,rarity,tiktok_code,checked_at_utc")
+        self.assertEqual(lines[0], "username,status,claimable_in_app,rarity,tiktok_code,checked_at_utc")
         self.assertEqual(len(lines), 3)
 
         # Second preview sees both as cached, and a rerun finishes without any requests.
@@ -114,6 +114,26 @@ class WebTest(unittest.TestCase):
         s = self.wait_for({"done"})
         self.assertIsNone(s["run"]["verify"])
         self.assertIn("cached", s["run"]["message"])
+
+    def test_mark_claimable_flow(self):
+        self.request("/api/run", {"names": ["zqxv", "zqxw", "kavo"], "delay": 1, "jitter": 0})
+        self.wait_for({"done"})
+
+        status, s = self.request("/api/mark", {"username": "@ZQXV", "claimable": True})
+        self.assertEqual(status, 200)
+        self.assertEqual((s["views"]["confirmed"], s["views"]["likely"]), (1, 1))
+        self.assertEqual(s["code_stats"], [{"code": 10221, "claimable": 1, "not_claimable": 0}])
+
+        _, rows = self.request("/api/results?view=confirmed")
+        self.assertEqual([(r["username"], r["confirmed"]) for r in rows], [("zqxv", 1)])
+
+        _, csv_body = self.request("/api/results.csv?view=all", raw=True)
+        self.assertIn("claimable_in_app", csv_body.decode().splitlines()[0])
+        self.assertIn("zqxv,no_profile,yes", csv_body.decode())
+
+        self.assertEqual(self.request("/api/mark", {"username": "nevercheckedname", "claimable": True})[0], 400)
+        self.assertEqual(self.request("/api/mark", {"username": "zqxv", "claimable": "yes"})[0], 400)
+        self.assertEqual(self.request("/api/results?view=bogus")[0], 400)
 
     def test_verify_endpoint(self):
         status, v = self.request("/api/verify", {"delay": 1})
@@ -152,6 +172,7 @@ class BlockedWebTest(WebTest):
     test_run_to_completion_then_results_and_csv = None
     test_stop_interrupts_delay_and_blocks_concurrent_runs = None
     test_verify_endpoint = None
+    test_mark_claimable_flow = None
 
 
 if __name__ == "__main__":

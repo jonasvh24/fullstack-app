@@ -63,7 +63,8 @@
   .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); font-size: 13px; }
   .pill b { font-variant-numeric: tabular-nums; }
   .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
-  .dot.no_profile { background: var(--good); }
+  .dot.no_profile { background: color-mix(in srgb, var(--good) 45%, transparent); box-shadow: inset 0 0 0 1.5px var(--good); }
+  .dot.confirmed { background: var(--good); }
   .dot.taken { background: var(--muted); }
   .dot.unknown { background: var(--warn); }
 
@@ -162,6 +163,16 @@
   .badge.no_profile { background: var(--good-soft); color: var(--good); }
   .badge.taken { background: var(--neutral-soft); color: var(--muted); }
   .badge.unknown { background: var(--warn-soft); color: var(--warn); }
+  .badge.claimable { background: var(--good); color: var(--panel); }
+  .badge.rejected { background: var(--bad-soft); color: var(--bad); }
+  .mark { display: inline-flex; gap: 4px; }
+  .mark button { padding: 3px 8px; font-size: 12px; font-weight: 600; border-radius: 6px; }
+  .mark .yes { color: var(--good); }
+  .mark .no { color: var(--bad); }
+  .mark .undo { color: var(--muted); font-weight: 500; }
+  .howto { font-size: 13px; color: var(--muted); margin: -4px 0 12px; }
+  .howto b { color: var(--ink); }
+  .codes { font-size: 12px; color: var(--muted); margin-top: 10px; }
   .empty { text-align: center; color: var(--muted); padding: 32px 8px; }
   .copy { border: 0; background: none; padding: 2px 6px; color: var(--muted); font-size: 12px; font-weight: 500; }
   .copy:hover { color: var(--accent); }
@@ -172,12 +183,12 @@
   <header>
     <div>
       <h1>Rare Handle Finder</h1>
-      <p class="sub">Generate rare TikTok usernames, score them, check which have no public profile.</p>
+      <p class="sub">Find rare TikTok usernames that are available, then confirm them in the app.</p>
     </div>
     <div class="totals" id="totals" aria-label="All-time results"></div>
   </header>
 
-  <p class="note"><b>No profile is not the same as claimable.</b> Banned, deleted and reserved usernames have no public profile either. Confirm each hit in the TikTok app (Edit profile &gt; Username) before relying on it.</p>
+  <p class="note"><b>"Likely available" means no public profile.</b> Banned, deleted and reserved usernames look the same from outside. Try each one in the TikTok app, then mark it Claimable or Not claimable here to build your confirmed list.</p>
 
   <div class="grid">
     <section class="card" aria-labelledby="h-cand">
@@ -255,12 +266,14 @@
         <span class="spacer"></span>
         <button type="button" id="csvBtn">Export CSV</button>
       </div>
+      <p class="howto" id="howto"><b>To confirm:</b> Copy a name, open TikTok, go to Profile &gt; Edit profile &gt; Username and paste it. If TikTok accepts it, click <b>Yes</b> (claim it there and then if you want it); if it says the name isn't available, click <b>No</b>.</p>
       <div class="tablewrap">
         <table>
-          <thead><tr><th>Username</th><th>Rarity</th><th>Status</th><th class="num">TikTok code</th><th>Checked (UTC)</th><th></th></tr></thead>
+          <thead><tr><th>Username</th><th>Rarity</th><th>Status</th><th class="num">TikTok code</th><th>Checked (UTC)</th><th>Claimable in the app?</th></tr></thead>
           <tbody id="rows"></tbody>
         </table>
       </div>
+      <p class="codes" id="codes" hidden></p>
     </section>
   </div>
 </div>
@@ -269,11 +282,12 @@
 const $ = (id) => document.getElementById(id);
 const PATTERNS = ["CVC", "CVCV", "VCVC", "CVCVC", "CVVC", "LLL", "LLLL"];
 const LENGTHS = [2, 3, 4, 5, 6];
-const STATUS_LABEL = { no_profile: "No profile", taken: "Taken", unknown: "Unknown" };
-const TABS = [["no_profile", "No profile"], ["taken", "Taken"], ["unknown", "Unknown"], ["all", "All"]];
+const STATUS_LABEL = { no_profile: "Likely available", taken: "Taken", unknown: "Unknown" };
+const TABS = [["likely", "Likely available"], ["confirmed", "Confirmed available"], ["rejected", "Not claimable"],
+              ["taken", "Taken"], ["unknown", "Unknown"], ["all", "All"]];
 
 const lengths = new Set();
-let tab = "no_profile";
+let tab = "likely";
 let lastDone = -1;
 let pollTimer = null;
 
@@ -362,23 +376,40 @@ function buildControls() {
   }
 }
 
-let totals = {};
+let views = {};
 function renderTabs() {
-  const all = Object.values(totals).reduce((a, b) => a + b, 0);
   for (const b of $("tabs").children) {
     const k = b.dataset.k;
-    const n = k === "all" ? all : (totals[k] || 0);
-    b.textContent = `${TABS.find((t) => t[0] === k)[1]} ${n}`;
+    b.textContent = `${TABS.find((t) => t[0] === k)[1]} ${views[k] || 0}`;
     b.setAttribute("aria-selected", String(k === tab));
   }
+  $("howto").hidden = tab !== "likely";
 }
 
-function renderTotals(t) {
-  totals = t || {};
-  const box = $("totals");
-  box.replaceChildren(...["no_profile", "taken", "unknown"].map((k) =>
-    el("span", { class: "pill" }, el("span", { class: `dot ${k}` }), `${STATUS_LABEL[k]} `, el("b", {}, String(totals[k] || 0)))));
+function renderTotals(v, codeStats) {
+  views = v || {};
+  const pills = [["confirmed", "Confirmed available", "confirmed"], ["likely", "Likely available", "no_profile"],
+                 ["taken", "Taken", "taken"]];
+  $("totals").replaceChildren(...pills.map(([k, label, dot]) =>
+    el("span", { class: "pill" }, el("span", { class: `dot ${dot}` }), `${label} `, el("b", {}, String(views[k] || 0)))));
   renderTabs();
+
+  // What each TikTok status code turned out to mean, from the names you confirmed.
+  const codes = (codeStats || []).map((c) =>
+    `code ${c.code ?? "none"}: ${c.claimable} claimable, ${c.not_claimable} not`);
+  $("codes").hidden = !codes.length;
+  $("codes").textContent = codes.length ? `From your confirmations so far: ${codes.join(" · ")}.` : "";
+}
+
+async function mark(username, claimable) {
+  try {
+    const s = await api("/api/mark", { username, claimable });
+    renderTotals(s.views, s.code_stats);
+    loadResults();
+  } catch (e) {
+    $("runMsg").className = "msg err";
+    $("runMsg").textContent = e.message;
+  }
 }
 
 async function preview() {
@@ -494,7 +525,7 @@ async function poll() {
   let running = false;
   try {
     const s = await api("/api/status");
-    renderTotals(s.totals);
+    renderTotals(s.views, s.code_stats);
     renderRun(s.run);
     running = s.run && ["running", "verifying"].includes(s.run.state);
     if (s.last_verify && !s.run?.verify) renderVerify(s.last_verify);
@@ -506,7 +537,7 @@ async function poll() {
 }
 
 function resultsQuery() {
-  const q = new URLSearchParams({ status: tab, min_rarity: $("resMin").value, q: $("search").value.trim(), limit: "500" });
+  const q = new URLSearchParams({ view: tab, min_rarity: $("resMin").value, q: $("search").value.trim(), limit: "500" });
   return q.toString();
 }
 
@@ -516,7 +547,9 @@ async function loadResults() {
   const body = $("rows");
   if (!rows.length) {
     body.replaceChildren(el("tr", {}, el("td", { colspan: "6", class: "empty" },
-      tab === "no_profile" ? "No hits yet. Preview some candidates, then start a check." : "Nothing here yet.")));
+      { likely: "No likely-available names yet. Preview some candidates, then start a check.",
+        confirmed: "Nothing confirmed yet. Try a likely-available name in the TikTok app, then mark it here." }[tab]
+        || "Nothing here yet.")));
     return;
   }
   body.replaceChildren(...rows.map((r) => {
@@ -527,13 +560,25 @@ async function loadResults() {
       try { await navigator.clipboard.writeText(r.username); copy.textContent = "Copied"; } catch { copy.textContent = "Failed"; }
       setTimeout(() => { copy.textContent = "Copy"; }, 1200);
     });
+    const badge = r.confirmed === 1 ? el("span", { class: "badge claimable" }, "Claimable")
+      : r.confirmed === 0 ? el("span", { class: "badge rejected" }, "Not claimable")
+      : el("span", { class: `badge ${r.status}` }, STATUS_LABEL[r.status]);
+    const btn = (cls, text, value, label) => el("button", {
+      type: "button", class: cls, "aria-label": `${label} @${r.username}`, onclick: () => mark(r.username, value),
+    }, text);
+    const actions = el("span", { class: "mark" }, copy);
+    if (r.status === "no_profile" && r.confirmed == null) {
+      actions.append(btn("yes", "Yes", true, "Claimable:"), btn("no", "No", false, "Not claimable:"));
+    } else if (r.confirmed != null) {
+      actions.append(btn("undo", "Undo", null, "Clear confirmation for"));
+    }
     return el("tr", {},
       el("td", {}, link),
       el("td", {}, el("span", { class: "rar" }, el("span", { class: "track" }, Object.assign(el("i"), { style: `width:${r.rarity}%` })), String(r.rarity))),
-      el("td", {}, el("span", { class: `badge ${r.status}` }, STATUS_LABEL[r.status])),
+      el("td", {}, badge),
       el("td", { class: "num" }, r.tiktok_code == null ? "–" : String(r.tiktok_code)),
       el("td", {}, checked),
-      el("td", {}, copy));
+      el("td", {}, actions));
   }));
 }
 

@@ -15,6 +15,7 @@ from pathlib import Path
 
 from . import candidates
 from .checker import Blocked, Checker, Status
+from .rules import normalise
 from .store import Store
 from .verify import verify
 
@@ -119,14 +120,35 @@ def cmd_verify(args: argparse.Namespace) -> None:
 
 def cmd_report(args: argparse.Namespace) -> None:
     store = Store(args.db)
-    counts = store.counts()
-    print("  ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "No results yet.")
-    rows = store.top(Status.NO_PROFILE, args.top, args.min_rarity)
-    if rows:
-        print(f"\n{'rarity':>6}  {'username':<24} {'code':>6}  checked (UTC)")
-        for name, score, code, checked in rows:
-            print(f"{score:>6}  {name:<24} {code if code is not None else '-':>6}  {checked}")
+    v = store.view_counts()
+    if not v["all"]:
+        print("No results yet.")
+    else:
+        print(f"confirmed available={v['confirmed']}  likely available={v['likely']}  "
+              f"not claimable={v['rejected']}  taken={v['taken']}  unknown={v['unknown']}")
+    for view, title in (("confirmed", "Confirmed available (you checked in the app)"),
+                        ("likely", "Likely available (no public profile; confirm in the app)")):
+        rows = store.rows(view, args.min_rarity, "", args.top)
+        if rows:
+            print(f"\n{title}\n{'rarity':>6}  {'username':<24} {'code':>6}")
+            for r in rows:
+                code = r["tiktok_code"] if r["tiktok_code"] is not None else "-"
+                print(f"{r['rarity']:>6}  {r['username']:<24} {code:>6}")
+    for s in store.code_stats():
+        print(f"\nTikTok code {s['code']}: {s['claimable']} claimable, {s['not_claimable']} not, of those you confirmed")
     store.close()
+
+
+def cmd_mark(args: argparse.Namespace) -> None:
+    claimable = {"yes": True, "no": False, "clear": None}[args.verdict]
+    store = Store(args.db)
+    try:
+        for raw in args.usernames:
+            name = normalise(raw)
+            ok = store.mark(name, claimable)
+            print(f"@{name}: {'marked ' + args.verdict if ok else 'not checked yet, skipped'}")
+    finally:
+        store.close()
 
 
 def cmd_serve(args: argparse.Namespace) -> None:
@@ -162,7 +184,13 @@ def main(argv: list[str] | None = None) -> None:
     p_ver.add_argument("--delay", type=float, default=3.0, help="seconds between the three requests")
     p_ver.set_defaults(func=cmd_verify)
 
-    p_rep = sub.add_parser("report", help="show the rarest no-profile handles found so far")
+    p_mark = sub.add_parser("mark", help="record whether TikTok's app accepted a username")
+    p_mark.add_argument("verdict", choices=["yes", "no", "clear"],
+                        help="yes = the app let you claim it, no = it refused, clear = forget")
+    p_mark.add_argument("usernames", nargs="+")
+    p_mark.set_defaults(func=cmd_mark)
+
+    p_rep = sub.add_parser("report", help="show confirmed and likely available handles")
     p_rep.add_argument("--top", type=int, default=25)
     p_rep.add_argument("--min-rarity", type=int, default=0)
     p_rep.set_defaults(func=cmd_report)
