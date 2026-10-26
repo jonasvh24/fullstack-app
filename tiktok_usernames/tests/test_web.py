@@ -82,6 +82,25 @@ class WebTest(unittest.TestCase):
         self.assertEqual(self.request("/api/preview", {"lengths": [30]})[0], 400)
         self.assertEqual(self.request("/api/results?status=bogus")[0], 400)
 
+    def test_themes_and_cool_preview(self):
+        status, themes = self.request("/api/themes")
+        self.assertEqual(status, 200)
+        self.assertIn("space", [t["name"] for t in themes])
+
+        status, p = self.request("/api/preview", {"themes": ["space", "animals"], "singles": True,
+                                                  "combos": True, "max_len": 9, "limit": 40})
+        self.assertEqual(status, 200)
+        self.assertGreater(p["total"], 40)
+        self.assertTrue(all(len(s["username"]) <= 9 for s in p["sample"]))
+        from tiktok_usernames.words import words_for
+        known = set(words_for(["space", "animals"]))
+        shown = [s["username"] for s in p["sample"]]
+        self.assertTrue(any(n in known for n in shown), "preview should show single words")
+        self.assertTrue(any(n not in known for n in shown), "preview should show combos too")
+
+        self.assertEqual(self.request("/api/preview", {"themes": ["bogus"]})[0], 400)
+        self.assertEqual(self.request("/api/preview", {"themes": ["space"], "singles": False, "combos": False})[0], 400)
+
     def test_preview(self):
         status, p = self.request("/api/preview", {"patterns": ["LL"], "names": ["kavo"], "limit": 1000})
         self.assertEqual(status, 200)

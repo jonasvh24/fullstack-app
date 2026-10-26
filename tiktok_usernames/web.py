@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import candidates
+from . import candidates, words as wordlists
 from .checker import Blocked, Checker, Fetcher, Status, http_fetch
 from .rules import MAX_LEN, is_valid, normalise
 from .store import VIEWS, Store
@@ -72,6 +72,10 @@ def parse_spec(body: dict) -> candidates.Spec:
     lengths = body.get("lengths") or []
     if not isinstance(lengths, list) or not all(isinstance(n, int) and 2 <= n <= 8 for n in lengths):
         raise BadRequest("lengths must be whole numbers from 2 to 8")
+    themes = _strings(body, "themes", len(wordlists.THEMES))
+    unknown = [t for t in themes if t not in wordlists.THEMES]
+    if unknown:
+        raise BadRequest(f"unknown theme: {', '.join(unknown)}")
 
     spec = candidates.Spec(
         patterns=patterns,
@@ -79,12 +83,18 @@ def parse_spec(body: dict) -> candidates.Spec:
         words=_strings(body, "words", 200_000),
         repeats=bool(body.get("repeats")),
         names=_strings(body, "names", MAX_CANDIDATES),
+        themes=themes,
+        singles=bool(body.get("singles", True)),
+        combos=bool(body.get("combos", False)),
+        max_len=_num(body, "max_len", 10, 3, MAX_LEN),
         limit=_num(body, "limit", 200, 1, 5000),
         min_rarity=_num(body, "min_rarity", 0, 0, 100),
         seed=_num(body, "seed", None, 0, 2**31),
     )
-    if not (spec.patterns or spec.lengths or spec.words or spec.repeats or spec.names):
-        raise BadRequest("Add at least one pattern, length, word, repeat shape or name.")
+    if not (spec.patterns or spec.lengths or spec.words or spec.repeats or spec.names or spec.themes):
+        raise BadRequest("Pick at least one theme, or add a pattern, length, word or name.")
+    if (spec.themes or spec.words) and not (spec.singles or spec.combos):
+        raise BadRequest("Choose single words, two-word combos, or both.")
     return spec
 
 
@@ -151,15 +161,27 @@ class App:
     def preview(self, body: dict) -> dict:
         delay = _num(body, "delay", 3.0, 1.0, 120.0, float)
         jitter = _num(body, "jitter", 1.5, 0.0, 60.0, float)
-        todo, fresh = self._split(parse_spec(body), _num(body, "max_age_hours", 72.0, 0.0, 10_000.0, float))
+        spec = parse_spec(body)
+        todo, fresh = self._split(spec, _num(body, "max_age_hours", 72.0, 0.0, 10_000.0, float))
         cached = {n for n, _ in fresh}
-        sample = sorted(todo + fresh, key=lambda s: (-s[1], len(s[0]), s[0]))[:PREVIEW_SAMPLE]
+        ranked = sorted(todo + fresh, key=lambda s: (-s[1], len(s[0]), s[0]))
+        # Single words always outscore combos, so a plain top-N would hide every
+        # combo. Show the best of each kind instead.
+        single_words = set(wordlists.words_for(spec.themes)) | {w.lower() for w in spec.words}
+        singles = [s for s in ranked if s[0] in single_words]
+        others = [s for s in ranked if s[0] not in single_words]
+        if singles and others:
+            half = PREVIEW_SAMPLE // 2
+            sample = singles[:max(half, PREVIEW_SAMPLE - len(others))] + others[:max(half, PREVIEW_SAMPLE - len(singles))]
+        else:
+            sample = ranked[:PREVIEW_SAMPLE]
         return {
             "total": len(todo) + len(fresh),
             "to_check": len(todo),
             "cached": len(fresh),
             "eta_seconds": round(len(todo) * (delay + jitter / 2)),
-            "sample": [{"username": n, "rarity": r, "cached": n in cached} for n, r in sample],
+            "sample": [{"username": n, "rarity": r, "cached": n in cached,
+                        "kind": "word" if n in single_words else "other"} for n, r in sample],
         }
 
     def start(self, body: dict) -> dict:
@@ -348,6 +370,7 @@ def make_handler(app: App, allowed_hosts: set[str]):
             self._dispatch({
                 "/": lambda q: self._send(200, (STATIC / "index.html").read_bytes(), "text/html; charset=utf-8"),
                 "/api/status": lambda q: self._json(app.status()),
+                "/api/themes": lambda q: self._json(wordlists.catalogue()),
                 "/api/results": lambda q: self._json(app.results(q)),
                 "/api/results.csv": self._csv,
             })

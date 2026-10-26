@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from . import generate
+from . import generate, words as wordlists
 from .rules import is_valid, normalise
 from .score import rarity
 
@@ -15,6 +15,10 @@ class Spec:
     words: list[str] = field(default_factory=list)
     repeats: bool = False
     names: list[str] = field(default_factory=list)
+    themes: list[str] = field(default_factory=list)  # keys of words.THEMES
+    singles: bool = True   # theme and pasted words on their own
+    combos: bool = False   # two words joined, e.g. "voidfox"
+    max_len: int = 10      # longest single word or combo to keep
     limit: int = 200
     min_rarity: int = 0
     seed: int | None = None
@@ -27,7 +31,11 @@ def build(spec: Spec) -> list[tuple[str, int]]:
         out += generate.from_pattern(pattern, spec.limit, spec.seed)
 
     words = [w for w in (normalise(w) for w in spec.words) if w.isalpha() and is_valid(w)]
-    out += [w for w in words if 3 <= len(w) <= 8]
+    words = list(dict.fromkeys(wordlists.words_for(spec.themes) + words))
+    if spec.singles:
+        out += [w for w in words if 3 <= len(w) <= spec.max_len]
+    if spec.combos:
+        out += generate.combos([w for w in words if len(w) >= 2], spec.limit, spec.max_len, spec.seed)
     if spec.repeats:
         out += generate.repeats()
     out += [n for n in (normalise(n) for n in spec.names) if is_valid(n)]

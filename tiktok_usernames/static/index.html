@@ -95,6 +95,9 @@
     padding: 3px 10px; border-radius: 999px; font: 12px var(--mono); cursor: pointer;
   }
   .chip[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .mode { margin-bottom: 4px; }
+  .theme-chip { font-family: inherit; font-size: 13px; padding: 5px 12px; }
+  .theme-chip small { color: inherit; opacity: .65; margin-left: 4px; }
   .check { display: flex; align-items: center; gap: 8px; font-weight: 500; margin-top: 12px; cursor: pointer; }
   details { margin-top: 12px; }
   summary { cursor: pointer; color: var(--muted); font-size: 13px; }
@@ -119,6 +122,8 @@
   .tag { font: 12px var(--mono); padding: 2px 8px; border-radius: 6px; background: var(--neutral-soft); }
   .tag.hi { background: var(--accent-soft); color: var(--accent); }
   .tag.cached { opacity: .5; }
+  .cloud h4 { flex-basis: 100%; margin: 6px 0 0; font-size: 12px; color: var(--muted); font-weight: 600; }
+  .cloud h4:first-child { margin-top: 0; }
 
   .bar { height: 8px; background: var(--field); border-radius: 999px; overflow: hidden; margin: 12px 0 6px; }
   .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .4s ease; }
@@ -194,25 +199,42 @@
     <section class="card" aria-labelledby="h-cand">
       <h2 id="h-cand"><span class="step">1</span>Candidates</h2>
 
-      <label for="patterns">Patterns <span class="hint">C consonant · V vowel · L letter · D digit · A letter or digit</span></label>
-      <input type="text" id="patterns" placeholder="CVCV, CVCVC" autocomplete="off" spellcheck="false">
-      <div class="chips" id="patternChips"></div>
+      <div class="tabs mode" role="tablist" aria-label="How to generate names">
+        <button type="button" role="tab" id="modeCool" aria-selected="true">Cool words</button>
+        <button type="button" role="tab" id="modePattern" aria-selected="false">Letter patterns</button>
+      </div>
 
-      <label>All-letter lengths</label>
-      <div class="chips" id="lengthChips"></div>
+      <div id="coolMode">
+        <label>Themes <span class="hint">pick any mix</span></label>
+        <div class="chips" id="themeChips"></div>
+        <label class="check"><input type="checkbox" id="singles" checked> Single words <span class="hint">nova, ember, raven: rare, but mostly taken already</span></label>
+        <label class="check"><input type="checkbox" id="combos" checked> Two-word combos <span class="hint">voidfox, lunarwolf: where the free names are</span></label>
+        <div class="row">
+          <div><label for="maxLen">Max length</label><input type="number" id="maxLen" value="10" min="3" max="24"></div>
+        </div>
+      </div>
 
-      <label class="check"><input type="checkbox" id="repeats"> Repeat shapes <span class="hint">aaa, abab, abba, aabb</span></label>
+      <div id="patternMode" hidden>
+        <label for="patterns">Patterns <span class="hint">C consonant · V vowel · L letter · D digit · A letter or digit</span></label>
+        <input type="text" id="patterns" placeholder="CVCV, CVCVC" autocomplete="off" spellcheck="false">
+        <div class="chips" id="patternChips"></div>
+
+        <label>All-letter lengths</label>
+        <div class="chips" id="lengthChips"></div>
+
+        <label class="check"><input type="checkbox" id="repeats"> Repeat shapes <span class="hint">aaa, abab, abba, aabb</span></label>
+      </div>
 
       <details>
-        <summary>Word list and your own names</summary>
-        <label for="words">Dictionary words <span class="hint">paste a word list; 3–8 letter words become candidates and earn the real-word bonus</span></label>
+        <summary>Your own words and names</summary>
+        <label for="words">Your own words <span class="hint">added to the themes: used on their own and in combos</span></label>
         <textarea id="words" spellcheck="false" placeholder="lion&#10;nova&#10;ember"></textarea>
         <label for="names">Your own names <span class="hint">one per line</span></label>
         <textarea id="names" spellcheck="false" placeholder="kavo&#10;zeyn"></textarea>
       </details>
 
       <div class="row">
-        <div><label for="limit">Per pattern</label><input type="number" id="limit" value="200" min="1" max="5000"></div>
+        <div><label for="limit">Max combos <span class="hint">/ per pattern</span></label><input type="number" id="limit" value="200" min="1" max="5000"></div>
         <div><label for="minRarity">Min rarity</label><input type="number" id="minRarity" value="0" min="0" max="100"></div>
         <div><label for="seed">Seed <span class="hint">optional</span></label><input type="number" id="seed" min="0" placeholder="random"></div>
       </div>
@@ -322,12 +344,52 @@ function lines(id) {
   return $(id).value.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
 }
 
+let mode = "cool";
+const themes = new Set(["space", "animals", "dark"]);
+
+function setMode(m) {
+  mode = m;
+  $("modeCool").setAttribute("aria-selected", String(m === "cool"));
+  $("modePattern").setAttribute("aria-selected", String(m === "pattern"));
+  $("coolMode").hidden = m !== "cool";
+  $("patternMode").hidden = m !== "pattern";
+}
+
+async function loadThemes() {
+  let list = [];
+  try { list = await api("/api/themes"); } catch { return; }
+  const all = el("button", { type: "button", class: "chip theme-chip", "aria-pressed": "false" }, "All");
+  const chips = list.map((t) => {
+    const chip = el("button", {
+      type: "button", class: "chip theme-chip", "aria-pressed": String(themes.has(t.name)),
+      title: `${t.count} words, e.g. ${t.examples.join(", ")}`,
+    }, t.label, el("small", {}, String(t.count)));
+    chip.addEventListener("click", () => {
+      themes.has(t.name) ? themes.delete(t.name) : themes.add(t.name);
+      chip.setAttribute("aria-pressed", String(themes.has(t.name)));
+      all.setAttribute("aria-pressed", String(themes.size === list.length));
+    });
+    return chip;
+  });
+  all.addEventListener("click", () => {
+    const on = themes.size !== list.length;
+    list.forEach((t, i) => { on ? themes.add(t.name) : themes.delete(t.name); chips[i].setAttribute("aria-pressed", String(on)); });
+    all.setAttribute("aria-pressed", String(on));
+  });
+  $("themeChips").replaceChildren(all, ...chips);
+}
+
 function spec() {
   const seed = $("seed").value.trim();
+  const cool = mode === "cool";
   return {
-    patterns: $("patterns").value.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean),
-    lengths: [...lengths].sort(),
-    repeats: $("repeats").checked,
+    themes: cool ? [...themes] : [],
+    singles: $("singles").checked,
+    combos: cool && $("combos").checked,
+    max_len: Number($("maxLen").value) || 10,
+    patterns: cool ? [] : $("patterns").value.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean),
+    lengths: cool ? [] : [...lengths].sort(),
+    repeats: !cool && $("repeats").checked,
     words: lines("words"),
     names: lines("names"),
     limit: Number($("limit").value) || 200,
@@ -421,9 +483,14 @@ async function preview() {
     $("pvTodo").textContent = p.to_check.toLocaleString();
     $("pvCached").textContent = p.cached.toLocaleString();
     $("pvEta").textContent = fmtDuration(p.eta_seconds);
-    $("pvCloud").replaceChildren(...p.sample.map((s) =>
-      el("span", { class: `tag${s.rarity >= 70 ? " hi" : ""}${s.cached ? " cached" : ""}`, title: `rarity ${s.rarity}${s.cached ? " · cached" : ""}` },
-        `${s.username} ${s.rarity}`)));
+    const tag = (s) => el("span", { class: `tag${s.rarity >= 70 ? " hi" : ""}${s.cached ? " cached" : ""}`,
+      title: `rarity ${s.rarity}${s.cached ? " · cached" : ""}` }, `${s.username} ${s.rarity}`);
+    const words = p.sample.filter((s) => s.kind === "word");
+    const others = p.sample.filter((s) => s.kind !== "word");
+    const label = mode === "cool" ? "Combos" : "Patterns and names";
+    $("pvCloud").replaceChildren(
+      ...(others.length && words.length ? [el("h4", {}, label)] : []), ...others.map(tag),
+      ...(others.length && words.length ? [el("h4", {}, "Single words")] : []), ...words.map(tag));
     $("preview").hidden = false;
     $("previewMsg").textContent = p.total > p.sample.length ? `Showing the top ${p.sample.length}.` : "";
   } catch (e) {
@@ -594,6 +661,9 @@ $("verifyBtn").addEventListener("click", verifyNow);
 buildControls();
 $("patterns").value = "CVCV";
 syncPatternChips();
+$("modeCool").addEventListener("click", () => setMode("cool"));
+$("modePattern").addEventListener("click", () => setMode("pattern"));
+loadThemes();
 poll();
 loadResults();
 </script>

@@ -1,5 +1,6 @@
 """Command-line entry point.
 
+    python -m tiktok_usernames generate --theme space --theme animals --combos
     python -m tiktok_usernames generate --pattern CVCV --limit 50
     python -m tiktok_usernames check --length 4 --limit 200 --delay 4
     python -m tiktok_usernames report --top 30
@@ -13,7 +14,7 @@ import csv
 import sys
 from pathlib import Path
 
-from . import candidates
+from . import candidates, words as wordlists
 from .checker import Blocked, Checker, Status
 from .rules import normalise
 from .store import Store
@@ -26,6 +27,11 @@ DEFAULT_DB = Path("tiktok_usernames.db")
 
 def _add_source_args(p: argparse.ArgumentParser) -> None:
     src = p.add_argument_group("candidate source (combine freely)")
+    src.add_argument("--theme", action="append", default=[], choices=[*wordlists.THEMES, "all"],
+                     help="cool-word theme, e.g. --theme space --theme animals, or --theme all. Repeatable.")
+    src.add_argument("--combos", action="store_true", help="also join two words, e.g. voidfox")
+    src.add_argument("--no-singles", action="store_true", help="skip single words; combos only")
+    src.add_argument("--max-len", type=int, default=10, help="longest word or combo to keep (default 10)")
     src.add_argument("--pattern", action="append", default=[],
                      help="C=consonant V=vowel L=letter D=digit A=alnum, e.g. CVCV. Repeatable.")
     src.add_argument("--length", type=int, action="append", default=[],
@@ -48,12 +54,16 @@ def _candidates(args: argparse.Namespace) -> list[tuple[str, int]]:
         words=lines(args.wordlist),
         repeats=args.repeats,
         names=lines(args.file),
+        themes=list(wordlists.THEMES) if "all" in args.theme else args.theme,
+        singles=not args.no_singles,
+        combos=args.combos,
+        max_len=args.max_len,
         limit=args.limit,
         min_rarity=args.min_rarity,
         seed=args.seed,
     )
-    if not (spec.patterns or spec.lengths or spec.words or spec.repeats or spec.names):
-        sys.exit("No candidates: pass at least one of --pattern, --length, --wordlist, --repeats, --file.")
+    if not (spec.patterns or spec.lengths or spec.words or spec.repeats or spec.names or spec.themes):
+        sys.exit("No candidates: pass at least one of --theme, --pattern, --length, --wordlist, --repeats, --file.")
     return candidates.build(spec)
 
 
@@ -151,6 +161,11 @@ def cmd_mark(args: argparse.Namespace) -> None:
         store.close()
 
 
+def cmd_themes(args: argparse.Namespace) -> None:
+    for t in wordlists.catalogue():
+        print(f"{t['name']:<9} {t['count']:>3} words  e.g. {', '.join(t['examples'])}")
+
+
 def cmd_serve(args: argparse.Namespace) -> None:
     from .web import serve
 
@@ -194,6 +209,9 @@ def main(argv: list[str] | None = None) -> None:
     p_rep.add_argument("--top", type=int, default=25)
     p_rep.add_argument("--min-rarity", type=int, default=0)
     p_rep.set_defaults(func=cmd_report)
+
+    p_thm = sub.add_parser("themes", help="list the cool-word themes")
+    p_thm.set_defaults(func=cmd_themes)
 
     p_srv = sub.add_parser("serve", help="run the local web UI")
     p_srv.add_argument("--host", default="127.0.0.1",

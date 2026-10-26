@@ -76,3 +76,12 @@ def repeats(min_len: int = 3, max_len: int = 5) -> list[str]:
         out.extend([a + b + a + b, a + b + b + a, a + a + b + b])
     return [n for n in dict.fromkeys(out) if min_len <= len(n) <= max_len]
 
+
+
+def combos(words: list[str], limit: int, max_len: int, seed: int | None = None) -> list[str]:
+    """Two different words joined ("voidfox"), up to max_len, in random order."""
+    rng = random.Random(seed)
+    names = [a + b for a, b in itertools.permutations(words, 2) if len(a) + len(b) <= max_len]
+    names = [n for n in dict.fromkeys(names) if is_valid(n)]
+    rng.shuffle(names)
+    return names[:limit]

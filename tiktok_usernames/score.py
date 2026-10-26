@@ -15,17 +15,23 @@ _LENGTH_POINTS = {2: 60, 3: 50, 4: 38, 5: 26, 6: 16, 7: 8}
 def is_pronounceable(name: str) -> bool:
     if not name.isalpha() or len(name) < 2:
         return False
-    if not any(ch in VOWELS for ch in name):
+    vowels = VOWELS + "y"  # "onyx", "nyx" read fine
+    if not any(ch in vowels for ch in name):
         return False
     run_c = run_v = 0
     for ch in name:
-        if ch in VOWELS:
+        if ch in vowels:
             run_v, run_c = run_v + 1, 0
         else:
             run_c, run_v = run_c + 1, 0
         if run_c > 2 or run_v > 2:
             return False
     return True
+
+
+def is_compound(name: str, wordset: set[str]) -> bool:
+    """Two known words joined, e.g. "voidfox"."""
+    return any(name[:i] in wordset and name[i:] in wordset for i in range(2, len(name) - 1))
 
 
 def rarity(name: str, wordset: set[str] | None = None) -> int:
@@ -42,6 +48,8 @@ def rarity(name: str, wordset: set[str] | None = None) -> int:
         score += 10
     if wordset and name in wordset:
         score += 15
+    elif wordset and is_compound(name, wordset):
+        score += 12
     if len(set(name)) == 1 or (len(name) >= 3 and name == name[::-1]):
         score += 5
 

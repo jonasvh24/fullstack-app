@@ -6,7 +6,11 @@ each one for a public profile. Python 3.9+ (the version built into macOS works),
 ## Quick start
 
 ```bash
-# See what you'd check, rarest first. No network calls.
+# Cool words: themed single words and two-word combos (voidfox, lunarwolf).
+python -m tiktok_usernames themes
+python -m tiktok_usernames generate --theme space --theme animals --combos --max-len 9
+
+# Or letter patterns. No network calls either way.
 python -m tiktok_usernames generate --pattern CVCV --length 3 --repeats --limit 100
 
 # Check them. Results go to tiktok_usernames.db; reruns skip cached names.
@@ -69,10 +73,35 @@ only, no build step, works offline. It rejects requests carrying a foreign
 cannot drive it. `--host 0.0.0.0` exposes it to your network; only do that
 on a network you trust, as there is no login.
 
+## Cool words
+
+The default mode in the web UI. Pick themes, then single words, two-word
+combos, or both:
+
+| Theme | Examples |
+|---|---|
+| Space | nova, orbit, lunar, nebula |
+| Nature | ember, fern, frost, tide |
+| Mythology | odin, loki, kraken, phoenix |
+| Dark | shadow, noir, onyx, phantom |
+| Animals | wolf, fox, lynx, raven |
+| Tech | pixel, glitch, neon, cyber |
+| Colours | crimson, azure, jade, cobalt |
+| Vibes | lucid, velvet, hazy, aura |
+
+Single cool words are rare and almost all taken. Two-word combos such as
+`hexwolf`, `nyxvoid` or `thorfox` are where available names turn up, and
+they score a bonus for being two real words. Your own pasted words join
+both the singles and the combos. `--max-len` (default 10) caps the length.
+
+CLI: `--theme NAME` (repeatable, or `--theme all`), `--combos`,
+`--no-singles`, `--max-len N`; `themes` lists them.
+
 ## Candidate sources
 
 | Flag | What it generates | Example |
 |---|---|---|
+| `--theme T` | curated cool words for a theme; add `--combos` for two-word joins | `--theme dark --combos` -> `nyxvoid` |
 | `--length N` | all-letter names of length N | `--length 4` -> `qzor` |
 | `--pattern P` | `C` consonant, `V` vowel, `L` letter, `D` digit, `A` letter-or-digit, anything else literal | `CVCV` -> `kavo`, `x_VC` -> `x_ak` |
 | `--wordlist F` | dictionary words 3-8 letters; also enables the real-word bonus | `--wordlist words.txt` |

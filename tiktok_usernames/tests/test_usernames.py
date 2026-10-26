@@ -282,6 +282,54 @@ class StoreTest(unittest.TestCase):
 
 
 
+class CoolWordsTest(unittest.TestCase):
+    def test_word_lists_are_clean(self):
+        from tiktok_usernames.words import THEMES, theme_words
+
+        for name in THEMES:
+            words = theme_words(name)
+            self.assertGreaterEqual(len(words), 30, name)
+            for w in words:
+                self.assertTrue(w.isalpha() and w.islower() and is_valid(w), (name, w))
+
+    def test_combos(self):
+        names = generate.combos(["void", "fox", "lunar", "wolf"], limit=100, max_len=8, seed=1)
+        self.assertIn("voidfox", names)
+        self.assertIn("foxvoid", names)
+        self.assertNotIn("lunarwolf", names)  # 9 letters, over max_len
+        self.assertNotIn("foxfox", names)     # never a word with itself
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(len(generate.combos(["void", "fox", "lunar", "wolf"], 3, 8, seed=1)), 3)
+
+    def test_compound_bonus(self):
+        from tiktok_usernames.score import is_compound
+
+        words = {"void", "fox", "lunar", "wolf"}
+        self.assertTrue(is_compound("voidfox", words))
+        self.assertFalse(is_compound("voidfx", words))
+        self.assertGreater(rarity("voidfox", words), rarity("voidfox"))
+        self.assertTrue(is_pronounceable("onyx"))
+
+    def test_build_from_themes(self):
+        from tiktok_usernames import candidates
+        from tiktok_usernames.words import theme_words
+
+        space = set(theme_words("space"))
+        both = candidates.build(candidates.Spec(themes=["space"], combos=True, max_len=9, limit=50, seed=3))
+        names = [n for n, _ in both]
+        singles = [n for n in names if n in space]
+        joined = [n for n in names if n not in space]
+        self.assertTrue(singles and joined)
+        self.assertTrue(all(len(n) <= 9 for n in names))
+        self.assertLessEqual(len(joined), 50)
+
+        only_combos = candidates.build(candidates.Spec(themes=["space"], singles=False, combos=True, limit=20, seed=3))
+        self.assertTrue(all(n not in space for n, _ in only_combos))
+
+        pasted = candidates.build(candidates.Spec(themes=["space"], words=["kavo"], singles=True))
+        self.assertIn("kavo", [n for n, _ in pasted])
+
+
 class CliMarkTest(unittest.TestCase):
     def test_mark_and_report(self):
         import contextlib
@@ -304,6 +352,20 @@ class CliMarkTest(unittest.TestCase):
             self.assertIn("@ghost: not checked yet", text)
             self.assertIn("confirmed available=1", text)
             self.assertIn("TikTok code 10221: 1 claimable", text)
+
+    def test_themes_and_generate(self):
+        import contextlib
+        import io
+
+        from tiktok_usernames.cli import main
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main(["themes"])
+            main(["generate", "--theme", "animals", "--combos", "--no-singles", "--limit", "5", "--seed", "1"])
+        lines = out.getvalue().splitlines()
+        self.assertTrue(any(l.startswith("animals") for l in lines))
+        self.assertEqual(len([l for l in lines if l[:3].strip().isdigit()]), 5)
 
 
 if __name__ == "__main__":
