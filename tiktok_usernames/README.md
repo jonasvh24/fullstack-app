@@ -14,7 +14,30 @@ python -m tiktok_usernames check --pattern CVCV --limit 300 --delay 4 --out hits
 
 # Rarest handles with no public profile, across all runs.
 python -m tiktok_usernames report --top 30 --min-rarity 60
+
+# Or do all of the above in the browser.
+python -m tiktok_usernames serve
 ```
+
+## Web UI
+
+```bash
+python -m tiktok_usernames serve              # http://localhost:8000
+python -m tiktok_usernames serve --port 9000
+```
+
+One page, three steps: build candidates (pattern chips, lengths, repeat
+shapes, a pasted word list or your own names) and preview them with
+counts and estimated time; start a check and watch it live, with Stop
+taking effect immediately even mid-delay; browse and filter results by
+status, rarity and name, copy a username or export CSV. It shares
+`tiktok_usernames.db` with the CLI, so runs from either show up in both.
+
+The server binds to `127.0.0.1` (this machine only) and is standard library
+only, no build step, works offline. It rejects requests carrying a foreign
+`Host` header and non-JSON POSTs, so a web page you happen to have open
+cannot drive it. `--host 0.0.0.0` exposes it to your network; only do that
+on a network you trust, as there is no login.
 
 ## Candidate sources
 

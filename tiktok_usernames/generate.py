@@ -10,9 +10,8 @@ So "CVCV" yields names like "bako", "LLL" every three-letter name, and
 """
 import itertools
 import random
-from pathlib import Path
 
-from .rules import is_valid, normalise
+from .rules import is_valid
 
 VOWELS = "aeiou"
 CONSONANTS = "bcdfghjklmnpqrstvwxyz"
@@ -74,24 +73,4 @@ def repeats(min_len: int = 3, max_len: int = 5) -> list[str]:
     for a, b in itertools.permutations(LETTERS, 2):
         out.extend([a + b + a + b, a + b + b + a, a + a + b + b])
     return [n for n in dict.fromkeys(out) if min_len <= len(n) <= max_len]
-
-
-def from_wordlist(path: Path, min_len: int = 3, max_len: int = 8) -> list[str]:
-    words = []
-    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        word = normalise(line)
-        if min_len <= len(word) <= max_len and word.isalpha() and is_valid(word):
-            words.append(word)
-    return list(dict.fromkeys(words))
-
-
-def from_file(path: Path) -> list[str]:
-    names = (normalise(line) for line in path.read_text(encoding="utf-8").splitlines())
-    return list(dict.fromkeys(n for n in names if is_valid(n)))
-
-
-def load_wordset(path: Path | None) -> set[str]:
-    if path is None:
-        return set()
-    return {normalise(w) for w in path.read_text(encoding="utf-8", errors="ignore").split()}
 

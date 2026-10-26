@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rare Handle Finder</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #14171c;
+    --muted: #5d6673;
+    --line: #e2e5ea;
+    --field: #f1f3f6;
+    --accent: #0f41f3;
+    --accent-ink: #ffffff;
+    --accent-soft: #e6ecfe;
+    --good: #0b7a4b;
+    --good-soft: #e3f4ec;
+    --warn: #9a5b00;
+    --warn-soft: #fbf0dc;
+    --bad: #b42318;
+    --bad-soft: #fdecea;
+    --neutral-soft: #eceef2;
+    --shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 1px 3px rgba(16, 24, 40, .06);
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1016;
+      --panel: #151a22;
+      --ink: #e8ebf0;
+      --muted: #96a0ae;
+      --line: #262d38;
+      --field: #1c222c;
+      --accent: #5b7cff;
+      --accent-ink: #ffffff;
+      --accent-soft: #1d2747;
+      --good: #4cc790;
+      --good-soft: #13291f;
+      --warn: #f0b04a;
+      --warn-soft: #2d2412;
+      --bad: #ff7a6e;
+      --bad-soft: #2f1716;
+      --neutral-soft: #222934;
+      --shadow: none;
+      color-scheme: dark;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: -.01em; }
+  .sub { color: var(--muted); margin: 2px 0 0; }
+  .totals { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; background: var(--panel); border: 1px solid var(--line); font-size: 13px; }
+  .pill b { font-variant-numeric: tabular-nums; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+  .dot.no_profile { background: var(--good); }
+  .dot.taken { background: var(--muted); }
+  .dot.unknown { background: var(--warn); }
+
+  .note { background: var(--warn-soft); color: var(--ink); border: 1px solid color-mix(in srgb, var(--warn) 35%, transparent); border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; }
+  .note b { color: var(--warn); }
+
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  @media (max-width: 860px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); padding: 18px; min-width: 0; }
+  .card h2 { font-size: 15px; margin: 0 0 14px; display: flex; align-items: center; gap: 8px; }
+  .step { width: 22px; height: 22px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); font-size: 12px; display: inline-grid; place-items: center; font-weight: 700; }
+  .full { grid-column: 1 / -1; }
+
+  label { display: block; font-weight: 600; font-size: 13px; margin: 12px 0 4px; }
+  label .hint { font-weight: 400; color: var(--muted); }
+  input[type=text], input[type=number], input[type=search], textarea {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--field); color: var(--ink); font: inherit;
+  }
+  textarea { font-family: var(--mono); font-size: 13px; min-height: 64px; resize: vertical; }
+  input:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; align-items: end; }
+  .row label { margin-top: 12px; }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .chip {
+    border: 1px solid var(--line); background: var(--field); color: var(--ink);
+    padding: 3px 10px; border-radius: 999px; font: 12px var(--mono); cursor: pointer;
+  }
+  .chip[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .check { display: flex; align-items: center; gap: 8px; font-weight: 500; margin-top: 12px; cursor: pointer; }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; align-items: center; }
+  button {
+    font: inherit; font-weight: 600; border-radius: 8px; padding: 8px 14px; cursor: pointer;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .msg { font-size: 13px; color: var(--muted); }
+  .msg.err { color: var(--bad); }
+
+  .summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 14px 0 10px; }
+  .stat { background: var(--field); border-radius: 8px; padding: 8px 10px; }
+  .stat .k { color: var(--muted); font-size: 12px; }
+  .stat .v { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  @media (max-width: 520px) { .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .cloud { display: flex; flex-wrap: wrap; gap: 6px; max-height: 180px; overflow: auto; }
+  .tag { font: 12px var(--mono); padding: 2px 8px; border-radius: 6px; background: var(--neutral-soft); }
+  .tag.hi { background: var(--accent-soft); color: var(--accent); }
+  .tag.cached { opacity: .5; }
+
+  .bar { height: 8px; background: var(--field); border-radius: 999px; overflow: hidden; margin: 12px 0 6px; }
+  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .4s ease; }
+  .state { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; text-transform: capitalize; }
+  .state.running .dot { background: var(--accent); animation: pulse 1.2s infinite; }
+  .state.done .dot { background: var(--good); }
+  .state.blocked .dot, .state.error .dot { background: var(--bad); }
+  .state.stopped .dot, .state.idle .dot { background: var(--muted); }
+  @keyframes pulse { 50% { opacity: .3; } }
+  @media (prefers-reduced-motion: reduce) { .state.running .dot { animation: none; } .bar > i { transition: none; } }
+  .feed { list-style: none; margin: 10px 0 0; padding: 0; max-height: 300px; overflow: auto; border-top: 1px solid var(--line); }
+  .feed li { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto; gap: 10px; align-items: center; padding: 6px 2px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .feed .u { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; }
+  .feed .s { color: var(--muted); font-size: 12px; }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 12px; }
+  .tabs { display: inline-flex; background: var(--field); border-radius: 8px; padding: 3px; gap: 2px; flex-wrap: wrap; }
+  .tabs button { border: 0; background: transparent; padding: 5px 10px; font-weight: 500; font-size: 13px; }
+  .tabs button[aria-selected=true] { background: var(--panel); box-shadow: var(--shadow); font-weight: 600; }
+  .toolbar input[type=search] { width: 180px; }
+  .range { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+  .spacer { flex: 1; }
+  .tablewrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-size: 12px; color: var(--muted); font-weight: 600; padding: 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td { padding: 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  td a { color: var(--ink); font-family: var(--mono); text-decoration: none; }
+  td a:hover { color: var(--accent); text-decoration: underline; }
+  .rar { display: inline-flex; align-items: center; gap: 8px; }
+  .rar .track { width: 70px; height: 6px; border-radius: 999px; background: var(--field); overflow: hidden; }
+  .rar .track i { display: block; height: 100%; background: var(--accent); }
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .badge.no_profile { background: var(--good-soft); color: var(--good); }
+  .badge.taken { background: var(--neutral-soft); color: var(--muted); }
+  .badge.unknown { background: var(--warn-soft); color: var(--warn); }
+  .empty { text-align: center; color: var(--muted); padding: 32px 8px; }
+  .copy { border: 0; background: none; padding: 2px 6px; color: var(--muted); font-size: 12px; font-weight: 500; }
+  .copy:hover { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Rare Handle Finder</h1>
+      <p class="sub">Generate rare TikTok usernames, score them, check which have no public profile.</p>
+    </div>
+    <div class="totals" id="totals" aria-label="All-time results"></div>
+  </header>
+
+  <p class="note"><b>No profile is not the same as claimable.</b> Banned, deleted and reserved usernames have no public profile either. Confirm each hit in the TikTok app (Edit profile &gt; Username) before relying on it.</p>
+
+  <div class="grid">
+    <section class="card" aria-labelledby="h-cand">
+      <h2 id="h-cand"><span class="step">1</span>Candidates</h2>
+
+      <label for="patterns">Patterns <span class="hint">C consonant · V vowel · L letter · D digit · A letter or digit</span></label>
+      <input type="text" id="patterns" placeholder="CVCV, CVCVC" autocomplete="off" spellcheck="false">
+      <div class="chips" id="patternChips"></div>
+
+      <label>All-letter lengths</label>
+      <div class="chips" id="lengthChips"></div>
+
+      <label class="check"><input type="checkbox" id="repeats"> Repeat shapes <span class="hint">aaa, abab, abba, aabb</span></label>
+
+      <details>
+        <summary>Word list and your own names</summary>
+        <label for="words">Dictionary words <span class="hint">paste a word list; 3–8 letter words become candidates and earn the real-word bonus</span></label>
+        <textarea id="words" spellcheck="false" placeholder="lion&#10;nova&#10;ember"></textarea>
+        <label for="names">Your own names <span class="hint">one per line</span></label>
+        <textarea id="names" spellcheck="false" placeholder="kavo&#10;zeyn"></textarea>
+      </details>
+
+      <div class="row">
+        <div><label for="limit">Per pattern</label><input type="number" id="limit" value="200" min="1" max="5000"></div>
+        <div><label for="minRarity">Min rarity</label><input type="number" id="minRarity" value="0" min="0" max="100"></div>
+        <div><label for="seed">Seed <span class="hint">optional</span></label><input type="number" id="seed" min="0" placeholder="random"></div>
+      </div>
+
+      <div class="actions">
+        <button type="button" id="previewBtn">Preview</button>
+        <span class="msg" id="previewMsg" role="status"></span>
+      </div>
+
+      <div id="preview" hidden>
+        <div class="summary">
+          <div class="stat"><div class="k">Candidates</div><div class="v" id="pvTotal">0</div></div>
+          <div class="stat"><div class="k">To check</div><div class="v" id="pvTodo">0</div></div>
+          <div class="stat"><div class="k">Cached</div><div class="v" id="pvCached">0</div></div>
+          <div class="stat"><div class="k">Est. time</div><div class="v" id="pvEta">0</div></div>
+        </div>
+        <div class="cloud" id="pvCloud"></div>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="h-run">
+      <h2 id="h-run"><span class="step">2</span>Check</h2>
+      <div class="row">
+        <div><label for="delay">Delay (s)</label><input type="number" id="delay" value="3" min="1" max="120" step="0.5"></div>
+        <div><label for="jitter">Jitter (s)</label><input type="number" id="jitter" value="1.5" min="0" max="60" step="0.5"></div>
+        <div><label for="maxAge">Recheck after (h)</label><input type="number" id="maxAge" value="72" min="0" max="10000"></div>
+      </div>
+      <div class="actions">
+        <button type="button" class="primary" id="startBtn">Start check</button>
+        <button type="button" class="danger" id="stopBtn" disabled>Stop</button>
+        <span class="msg" id="runMsg" role="status"></span>
+      </div>
+
+      <div class="bar" aria-hidden="true"><i id="progress"></i></div>
+      <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:13px">
+        <span class="state idle" id="state"><span class="dot"></span><span id="stateText">idle</span></span>
+        <span class="msg" id="progressText"></span>
+      </div>
+      <div class="totals" id="runCounts" style="margin-top:8px"></div>
+      <ul class="feed" id="feed" aria-live="polite"></ul>
+    </section>
+
+    <section class="card full" aria-labelledby="h-res">
+      <h2 id="h-res"><span class="step">3</span>Results</h2>
+      <div class="toolbar">
+        <div class="tabs" role="tablist" id="tabs"></div>
+        <input type="search" id="search" placeholder="Filter usernames" aria-label="Filter usernames">
+        <span class="range">Min rarity <input type="range" id="resMin" min="0" max="100" value="0" aria-label="Minimum rarity"> <b id="resMinVal">0</b></span>
+        <span class="spacer"></span>
+        <button type="button" id="csvBtn">Export CSV</button>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>Username</th><th>Rarity</th><th>Status</th><th class="num">TikTok code</th><th>Checked (UTC)</th><th></th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const PATTERNS = ["CVC", "CVCV", "VCVC", "CVCVC", "CVVC", "LLL", "LLLL"];
+const LENGTHS = [2, 3, 4, 5, 6];
+const STATUS_LABEL = { no_profile: "No profile", taken: "Taken", unknown: "Unknown" };
+const TABS = [["no_profile", "No profile"], ["taken", "Taken"], ["unknown", "Unknown"], ["all", "All"]];
+
+const lengths = new Set();
+let tab = "no_profile";
+let lastDone = -1;
+let pollTimer = null;
+
+function el(tag, attrs = {}, ...kids) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") n.className = v;
+    else if (k.startsWith("on")) n.addEventListener(k.slice(2), v);
+    else n.setAttribute(k, v);
+  }
+  for (const k of kids) n.append(k);
+  return n;
+}
+
+function fmtDuration(s) {
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.round(s / 60);
+  return m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+async function api(path, body) {
+  const opts = body === undefined ? {} : {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  };
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function lines(id) {
+  return $(id).value.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+}
+
+function spec() {
+  const seed = $("seed").value.trim();
+  return {
+    patterns: $("patterns").value.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean),
+    lengths: [...lengths].sort(),
+    repeats: $("repeats").checked,
+    words: lines("words"),
+    names: lines("names"),
+    limit: Number($("limit").value) || 200,
+    min_rarity: Number($("minRarity").value) || 0,
+    seed: seed === "" ? null : Number(seed),
+    delay: Number($("delay").value),
+    jitter: Number($("jitter").value),
+    max_age_hours: Number($("maxAge").value),
+  };
+}
+
+function syncPatternChips() {
+  const current = new Set($("patterns").value.split(/[\s,]+/).filter(Boolean));
+  for (const chip of $("patternChips").children) chip.setAttribute("aria-pressed", current.has(chip.dataset.p));
+}
+
+function buildControls() {
+  for (const p of PATTERNS) {
+    $("patternChips").append(el("button", {
+      type: "button", class: "chip", "aria-pressed": "false", "data-p": p,
+      onclick: () => {
+        const list = $("patterns").value.split(/[\s,]+/).filter(Boolean);
+        const i = list.indexOf(p);
+        i >= 0 ? list.splice(i, 1) : list.push(p);
+        $("patterns").value = list.join(", ");
+        syncPatternChips();
+      },
+    }, p));
+  }
+  $("patterns").addEventListener("input", syncPatternChips);
+
+  for (const n of LENGTHS) {
+    const chip = el("button", { type: "button", class: "chip", "aria-pressed": "false" }, `${n} letters`);
+    chip.addEventListener("click", () => {
+      lengths.has(n) ? lengths.delete(n) : lengths.add(n);
+      chip.setAttribute("aria-pressed", lengths.has(n));
+    });
+    $("lengthChips").append(chip);
+  }
+
+  for (const [key, label] of TABS) {
+    $("tabs").append(el("button", {
+      type: "button", role: "tab", "aria-selected": String(key === tab), "data-k": key,
+      onclick: () => { tab = key; renderTabs(); loadResults(); },
+    }, label));
+  }
+}
+
+let totals = {};
+function renderTabs() {
+  const all = Object.values(totals).reduce((a, b) => a + b, 0);
+  for (const b of $("tabs").children) {
+    const k = b.dataset.k;
+    const n = k === "all" ? all : (totals[k] || 0);
+    b.textContent = `${TABS.find((t) => t[0] === k)[1]} ${n}`;
+    b.setAttribute("aria-selected", String(k === tab));
+  }
+}
+
+function renderTotals(t) {
+  totals = t || {};
+  const box = $("totals");
+  box.replaceChildren(...["no_profile", "taken", "unknown"].map((k) =>
+    el("span", { class: "pill" }, el("span", { class: `dot ${k}` }), `${STATUS_LABEL[k]} `, el("b", {}, String(totals[k] || 0)))));
+  renderTabs();
+}
+
+async function preview() {
+  $("previewMsg").className = "msg";
+  $("previewMsg").textContent = "Building…";
+  try {
+    const p = await api("/api/preview", spec());
+    $("pvTotal").textContent = p.total.toLocaleString();
+    $("pvTodo").textContent = p.to_check.toLocaleString();
+    $("pvCached").textContent = p.cached.toLocaleString();
+    $("pvEta").textContent = fmtDuration(p.eta_seconds);
+    $("pvCloud").replaceChildren(...p.sample.map((s) =>
+      el("span", { class: `tag${s.rarity >= 70 ? " hi" : ""}${s.cached ? " cached" : ""}`, title: `rarity ${s.rarity}${s.cached ? " · cached" : ""}` },
+        `${s.username} ${s.rarity}`)));
+    $("preview").hidden = false;
+    $("previewMsg").textContent = p.total > p.sample.length ? `Showing the top ${p.sample.length}.` : "";
+  } catch (e) {
+    $("previewMsg").className = "msg err";
+    $("previewMsg").textContent = e.message;
+  }
+}
+
+async function start() {
+  $("runMsg").className = "msg";
+  $("runMsg").textContent = "Starting…";
+  $("startBtn").disabled = true;
+  try {
+    await api("/api/run", spec());
+    $("runMsg").textContent = "";
+    poll();
+  } catch (e) {
+    $("runMsg").className = "msg err";
+    $("runMsg").textContent = e.message;
+    $("startBtn").disabled = false;
+  }
+}
+
+async function stop() {
+  $("stopBtn").disabled = true;
+  try { renderRun((await api("/api/run/stop", {})).run); } catch (e) { $("runMsg").textContent = e.message; }
+}
+
+function renderRun(run) {
+  const state = run ? run.state : "idle";
+  const running = state === "running";
+  $("startBtn").disabled = running;
+  $("stopBtn").disabled = !running;
+  $("state").className = `state ${state}`;
+  $("stateText").textContent = state;
+  if (!run) return;
+
+  const pct = run.total ? (run.done / run.total) * 100 : 100;
+  $("progress").style.width = `${pct}%`;
+  $("progressText").textContent = running
+    ? `${run.done} / ${run.total} · ~${fmtDuration(run.eta_seconds)} left`
+    : `${run.done} / ${run.total} checked${run.cached ? ` · ${run.cached} cached` : ""}`;
+  if (run.message) {
+    $("runMsg").className = state === "blocked" || state === "error" ? "msg err" : "msg";
+    $("runMsg").textContent = run.message;
+  }
+  $("runCounts").replaceChildren(...Object.entries(run.counts).map(([k, v]) =>
+    el("span", { class: "pill" }, el("span", { class: `dot ${k}` }), `${STATUS_LABEL[k]} `, el("b", {}, String(v)))));
+  $("feed").replaceChildren(...run.feed.map((r) => el("li", {},
+    el("span", { class: `dot ${r.status}` }),
+    el("span", { class: "u" }, `@${r.username}`),
+    el("span", { class: "s" }, r.tiktok_code ? `${STATUS_LABEL[r.status]} · ${r.tiktok_code}` : STATUS_LABEL[r.status]),
+    el("span", { class: "s" }, String(r.rarity)))));
+
+  if (run.done !== lastDone) { lastDone = run.done; loadResults(); }
+}
+
+async function poll() {
+  clearTimeout(pollTimer);
+  let running = false;
+  try {
+    const s = await api("/api/status");
+    renderTotals(s.totals);
+    renderRun(s.run);
+    running = s.run && s.run.state === "running";
+  } catch (e) {
+    $("runMsg").className = "msg err";
+    $("runMsg").textContent = "Lost contact with the local server.";
+  }
+  pollTimer = setTimeout(poll, running ? 1500 : 8000);
+}
+
+function resultsQuery() {
+  const q = new URLSearchParams({ status: tab, min_rarity: $("resMin").value, q: $("search").value.trim(), limit: "500" });
+  return q.toString();
+}
+
+async function loadResults() {
+  let rows;
+  try { rows = await api(`/api/results?${resultsQuery()}`); } catch { return; }
+  const body = $("rows");
+  if (!rows.length) {
+    body.replaceChildren(el("tr", {}, el("td", { colspan: "6", class: "empty" },
+      tab === "no_profile" ? "No hits yet. Preview some candidates, then start a check." : "Nothing here yet.")));
+    return;
+  }
+  body.replaceChildren(...rows.map((r) => {
+    const checked = new Date(r.checked_at * 1000).toISOString().slice(0, 16).replace("T", " ");
+    const link = el("a", { href: `https://www.tiktok.com/@${encodeURIComponent(r.username)}`, target: "_blank", rel: "noopener noreferrer" }, `@${r.username}`);
+    const copy = el("button", { type: "button", class: "copy", "aria-label": `Copy ${r.username}` }, "Copy");
+    copy.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(r.username); copy.textContent = "Copied"; } catch { copy.textContent = "Failed"; }
+      setTimeout(() => { copy.textContent = "Copy"; }, 1200);
+    });
+    return el("tr", {},
+      el("td", {}, link),
+      el("td", {}, el("span", { class: "rar" }, el("span", { class: "track" }, Object.assign(el("i"), { style: `width:${r.rarity}%` })), String(r.rarity))),
+      el("td", {}, el("span", { class: `badge ${r.status}` }, STATUS_LABEL[r.status])),
+      el("td", { class: "num" }, r.tiktok_code == null ? "–" : String(r.tiktok_code)),
+      el("td", {}, checked),
+      el("td", {}, copy));
+  }));
+}
+
+let searchTimer;
+$("search").addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(loadResults, 200); });
+$("resMin").addEventListener("input", () => { $("resMinVal").textContent = $("resMin").value; clearTimeout(searchTimer); searchTimer = setTimeout(loadResults, 150); });
+$("csvBtn").addEventListener("click", () => { window.location.href = `/api/results.csv?${resultsQuery().replace("limit=500", "limit=100000")}`; });
+$("previewBtn").addEventListener("click", preview);
+$("startBtn").addEventListener("click", start);
+$("stopBtn").addEventListener("click", stop);
+
+buildControls();
+$("patterns").value = "CVCV";
+syncPatternChips();
+poll();
+loadResults();
+</script>
+</body>
+</html>

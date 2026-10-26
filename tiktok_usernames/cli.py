@@ -3,15 +3,15 @@
     python -m tiktok_usernames generate --pattern CVCV --limit 50
     python -m tiktok_usernames check --length 4 --limit 200 --delay 4
     python -m tiktok_usernames report --top 30
+    python -m tiktok_usernames serve            # web UI on http://127.0.0.1:8000
 """
 import argparse
 import csv
 import sys
 from pathlib import Path
 
-from . import generate
+from . import candidates
 from .checker import Blocked, Checker, Status
-from .score import rarity
 from .store import Store
 
 DEFAULT_DB = Path("tiktok_usernames.db")
@@ -32,25 +32,22 @@ def _add_source_args(p: argparse.ArgumentParser) -> None:
 
 
 def _candidates(args: argparse.Namespace) -> list[tuple[str, int]]:
-    names: list[str] = []
-    patterns = args.pattern + ["L" * n for n in args.length]
-    for pattern in patterns:
-        names += generate.from_pattern(pattern, args.limit, args.seed)
-    if args.wordlist:
-        names += generate.from_wordlist(args.wordlist)
-    if args.repeats:
-        names += generate.repeats()
-    if args.file:
-        names += generate.from_file(args.file)
-    if not names:
-        sys.exit("No candidates: pass at least one of --pattern, --length, --wordlist, --repeats, --file.")
+    def lines(path: Path | None) -> list[str]:
+        return path.read_text(encoding="utf-8", errors="ignore").split() if path else []
 
-    wordset = generate.load_wordset(args.wordlist)
-    scored = [(n, rarity(n, wordset)) for n in dict.fromkeys(names)]
-    scored = [s for s in scored if s[1] >= args.min_rarity]
-    # Rarest first, so an interrupted run has already spent its requests well.
-    scored.sort(key=lambda s: (-s[1], len(s[0]), s[0]))
-    return scored
+    spec = candidates.Spec(
+        patterns=args.pattern,
+        lengths=args.length,
+        words=lines(args.wordlist),
+        repeats=args.repeats,
+        names=lines(args.file),
+        limit=args.limit,
+        min_rarity=args.min_rarity,
+        seed=args.seed,
+    )
+    if not (spec.patterns or spec.lengths or spec.words or spec.repeats or spec.names):
+        sys.exit("No candidates: pass at least one of --pattern, --length, --wordlist, --repeats, --file.")
+    return candidates.build(spec)
 
 
 def cmd_generate(args: argparse.Namespace) -> None:
@@ -108,6 +105,12 @@ def cmd_report(args: argparse.Namespace) -> None:
     store.close()
 
 
+def cmd_serve(args: argparse.Namespace) -> None:
+    from .web import serve
+
+    serve(args.db, args.host, args.port)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="tiktok_usernames",
@@ -133,6 +136,12 @@ def main(argv: list[str] | None = None) -> None:
     p_rep.add_argument("--top", type=int, default=25)
     p_rep.add_argument("--min-rarity", type=int, default=0)
     p_rep.set_defaults(func=cmd_report)
+
+    p_srv = sub.add_parser("serve", help="run the local web UI")
+    p_srv.add_argument("--host", default="127.0.0.1",
+                       help="interface to bind (default 127.0.0.1, this machine only)")
+    p_srv.add_argument("--port", type=int, default=8000)
+    p_srv.set_defaults(func=cmd_serve)
 
     args = parser.parse_args(argv)
     if getattr(args, "delay", 3.0) < 1.0:
