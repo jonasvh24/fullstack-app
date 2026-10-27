@@ -1,0 +1,41 @@
+# nulltrades configuration. Percentages are whole numbers (2 means 2%).
+# bps means basis points (10 bps is 0.10%). Secrets never go here: use the
+# environment (see README). Risk limits can be tightened, never loosened past
+# the hard bounds in nulltrades/config.py. The app always starts in PAPER.
+# Check fee rates against your Kraken fee tier before going live.
+mode: paper
+starting_capital_eur: 20
+live_capital_cap_eur: 20
+target_roi: 1.0
+pairs: []            # none set: the engine will not start until you add EUR pairs
+timeframe: 1h
+model: claude-sonnet-5-5
+prompt_version: v1
+max_model_calls_per_day: 48
+risk:
+  risk_per_trade_pct: 2
+  max_position_pct: 50
+  max_open_positions: 2
+  max_trades_per_day: 6
+  min_stop_pct: 1.0
+  max_stop_pct: 5.0
+  max_take_profit_pct: 10.0
+  min_reward_risk: 1.5
+  cost_multiple: 3
+  fee_maker_pct: 0.25
+  fee_taker_pct: 0.40
+  cooldown_minutes: 60
+  max_daily_loss_pct: 10
+  max_drawdown_pct: 25
+  max_hold_hours: 72
+  max_slippage_bps: 15
+  paper_slippage_bps: 10
+  order_timeout_seconds: 120
+live_gate:
+  paper_days: 14
+  paper_trades: 30
+flatten_on_kill: true
+notifications:
+  telegram: true
+  daily_summary: true
+port: 8765
