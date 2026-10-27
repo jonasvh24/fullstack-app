@@ -1,0 +1,786 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CleanYourTV Console</title>
+<style>
+:root {
+  --bg: #0d0f14; --panel: #15181e; --panel-2: #1c2028; --line: #2a2f3a; --text: #e8ebf0; --muted: #8b93a3;
+  --accent: #cfffcf; --accent-ink: #0d1a0d; --accent-dim: rgba(207,255,207,.12);
+  --warn: #ffd479; --warn-dim: rgba(255,212,121,.12); --bad: #ff7a7a; --bad-dim: rgba(255,122,122,.12);
+  --info: #8ab4ff; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius: 12px;
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f4f5f7; --panel: #ffffff; --panel-2: #f0f2f5; --line: #dde1e7; --text: #15181e; --muted: #5c6575;
+    --accent: #13824a; --accent-ink: #ffffff; --accent-dim: rgba(19,130,74,.1);
+    --warn: #9a6400; --warn-dim: rgba(154,100,0,.1); --bad: #c62828; --bad-dim: rgba(198,40,40,.08);
+    --info: #2457c5; color-scheme: light;
+  }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+button, input, select { font: inherit; color: inherit; }
+a { color: var(--info); }
+code, .mono { font-family: var(--mono); font-size: 12.5px; }
+h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -.01em; }
+h2 { font-size: 20px; } h3 { font-size: 15px; }
+.muted { color: var(--muted); }
+.small { font-size: 12.5px; }
+
+/* shell */
+.app { display: grid; grid-template-columns: 220px 1fr; grid-template-rows: 56px 1fr auto; height: 100vh; }
+header { grid-column: 1 / -1; display: flex; align-items: center; gap: 16px; padding: 0 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 16px; }
+.brand-mark { width: 26px; height: 18px; border: 2px solid var(--accent); border-radius: 4px; position: relative; }
+.brand-mark::after { content: ""; position: absolute; left: 50%; bottom: -6px; width: 10px; height: 2px; margin-left: -5px; background: var(--accent); border-radius: 1px; }
+.spacer { flex: 1; }
+.pill { display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-2); font-size: 13px; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+.dot.ok { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.dot.bad { background: var(--bad); } .dot.run { background: var(--warn); animation: pulse 1s infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+nav { border-right: 1px solid var(--line); padding: 16px 10px; display: flex; flex-direction: column; gap: 2px; background: var(--panel); }
+nav button { all: unset; cursor: pointer; display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; color: var(--muted); }
+nav button:hover { background: var(--panel-2); color: var(--text); }
+nav button.active { background: var(--accent-dim); color: var(--text); }
+nav button:focus-visible { outline: 2px solid var(--accent); }
+.step { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line); display: grid; place-items: center; font-size: 12px; flex: none; }
+nav button.active .step { border-color: var(--accent); color: var(--accent); }
+.step.done { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+nav .nav-foot { margin-top: auto; padding: 12px; font-size: 12px; color: var(--muted); }
+main { overflow: auto; padding: 24px 28px 40px; }
+.view { display: none; max-width: 1180px; }
+.view.active { display: block; }
+.view-head { margin-bottom: 18px; }
+.view-head p { margin: 4px 0 0; color: var(--muted); max-width: 760px; }
+
+/* blocks */
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; }
+.card h3 { margin-bottom: 10px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.stack > * + * { margin-top: 10px; }
+.btn { cursor: pointer; border: 1px solid var(--line); background: var(--panel-2); padding: 8px 14px; border-radius: 8px; font-weight: 500; white-space: nowrap; }
+.btn:hover:not(:disabled) { border-color: var(--muted); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn.primary:hover:not(:disabled) { filter: brightness(1.05); }
+.btn.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.btn.ghost { background: transparent; }
+.btn.sm { padding: 5px 10px; font-size: 13px; }
+.btn:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+input[type=text], input[type=search], select { background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 11px; min-width: 0; }
+input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+.note { padding: 10px 12px; border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line); }
+.note.warn { background: var(--warn-dim); border-color: transparent; }
+.note.bad { background: var(--bad-dim); border-color: transparent; }
+.note.ok { background: var(--accent-dim); border-color: transparent; }
+.kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+ol.steps { margin: 0; padding-left: 20px; } ol.steps li + li { margin-top: 6px; }
+.tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); white-space: nowrap; }
+.tag.ok { color: var(--accent); border-color: transparent; background: var(--accent-dim); }
+.tag.warn { color: var(--warn); border-color: transparent; background: var(--warn-dim); }
+.tag.bad { color: var(--bad); border-color: transparent; background: var(--bad-dim); }
+.tag.info { color: var(--info); }
+pre.text { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12px; margin: 0; max-height: 340px; overflow: auto; color: var(--muted); }
+details > summary { cursor: pointer; color: var(--muted); }
+details[open] > summary { margin-bottom: 8px; }
+
+/* debloat */
+.split { display: grid; grid-template-columns: 330px 1fr; gap: 16px; align-items: start; }
+.picker { position: sticky; top: 0; display: flex; flex-direction: column; max-height: calc(100vh - 210px); padding: 0; overflow: hidden; }
+.picker-head { padding: 14px; border-bottom: 1px solid var(--line); display: grid; gap: 8px; }
+.picker-list { overflow: auto; padding: 6px; }
+.group-label { padding: 10px 10px 4px; font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.li { all: unset; display: block; box-sizing: border-box; width: 100%; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.li:hover { background: var(--panel-2); } .li.active { background: var(--accent-dim); }
+.li:focus-visible { outline: 2px solid var(--accent); }
+.li .t { font-weight: 500; overflow-wrap: anywhere; } .li .s { font-size: 12px; color: var(--muted); }
+.section { margin-top: 14px; }
+.section-head { display: flex; align-items: center; gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); font-weight: 600; }
+.pkg { display: grid; grid-template-columns: 20px 1fr auto; gap: 10px; align-items: start; padding: 7px 4px; border-bottom: 1px solid color-mix(in srgb, var(--line) 55%, transparent); }
+.pkg:hover { background: color-mix(in srgb, var(--panel-2) 60%, transparent); }
+.pkg .name { font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; }
+.pkg .why { font-size: 12.5px; color: var(--muted); }
+.pkg.off .name { color: var(--muted); }
+.pkg.locked { opacity: .7; }
+.summary { display: flex; gap: 18px; flex-wrap: wrap; }
+.stat b { display: block; font-size: 22px; font-weight: 600; }
+.stat span { font-size: 12px; color: var(--muted); }
+.actions { position: sticky; bottom: -40px; margin: 16px -18px -18px; padding: 14px 18px; background: var(--panel); border-top: 1px solid var(--line); border-radius: 0 0 var(--radius) var(--radius); }
+
+/* themes */
+.themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+.theme { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; }
+.theme img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block; background: #000; }
+.theme .body { padding: 12px 14px; flex: 1; display: flex; flex-direction: column; gap: 8px; }
+.theme p { margin: 0; font-size: 12.5px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* remote */
+.remote-wrap { display: grid; grid-template-columns: 1fr 260px; gap: 18px; align-items: start; }
+.screen { position: relative; aspect-ratio: 16 / 9; background: #000; border-radius: 10px; border: 1px solid var(--line); overflow: hidden; display: grid; place-items: center; color: #8b93a3; }
+.screen img { width: 100%; height: 100%; object-fit: contain; }
+.screen .busy { position: absolute; top: 10px; right: 10px; }
+.remote { background: linear-gradient(180deg, #23262d, #17191e); border-radius: 36px; padding: 22px 20px; display: grid; gap: 16px; justify-items: center; border: 1px solid #2c3039; color: #e8ebf0; }
+.dpad { position: relative; width: 180px; height: 180px; border-radius: 50%; background: #2b2f37; }
+.dpad button, .rbtn { all: unset; cursor: pointer; display: grid; place-items: center; color: #e8ebf0; }
+.dpad button:focus-visible, .rbtn:focus-visible { outline: 2px solid var(--accent); }
+.dpad .up, .dpad .down { position: absolute; left: 60px; width: 60px; height: 56px; }
+.dpad .up { top: 0; } .dpad .down { bottom: 0; }
+.dpad .left, .dpad .right { position: absolute; top: 60px; width: 56px; height: 60px; }
+.dpad .left { left: 0; } .dpad .right { right: 0; }
+.dpad .ok { position: absolute; left: 50px; top: 50px; width: 80px; height: 80px; border-radius: 50%; background: #3a3f49; font-weight: 600; }
+.dpad button:active, .rbtn:active { filter: brightness(1.4); }
+.rrow { display: flex; gap: 14px; }
+.rbtn { width: 52px; height: 40px; border-radius: 20px; background: #2b2f37; font-size: 12px; }
+.rbtn.round { width: 46px; height: 46px; border-radius: 50%; }
+.remote .label { font-size: 11px; color: #8b93a3; }
+
+/* console */
+.console { grid-column: 1 / -1; border-top: 1px solid var(--line); background: var(--panel); }
+.console-bar { display: flex; align-items: center; gap: 12px; padding: 8px 20px; cursor: pointer; }
+.console-bar .title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console pre { margin: 0; height: 200px; overflow: auto; padding: 10px 20px 14px; background: #0a0b0e; color: #cdd3dc; font-family: var(--mono); font-size: 12px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; border-top: 1px solid var(--line); }
+.console.closed pre { display: none; }
+.console pre .cmd { color: #8ab4ff; } .console pre .err { color: #ff9b9b; } .console pre .okl { color: #cfffcf; }
+
+dialog { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--text); padding: 0; width: min(520px, calc(100vw - 32px)); }
+dialog::backdrop { background: rgba(0,0,0,.55); }
+dialog .dbody { padding: 20px; } dialog .dfoot { padding: 14px 20px; border-top: 1px solid var(--line); display: flex; justify-content: flex-end; gap: 10px; }
+.toast { position: fixed; right: 20px; bottom: 56px; z-index: 10; max-width: 420px; padding: 12px 14px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); box-shadow: 0 8px 30px rgba(0,0,0,.35); display: none; }
+.toast.show { display: block; } .toast.bad { border-color: var(--bad); }
+.empty { padding: 40px 20px; text-align: center; color: var(--muted); }
+
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr; grid-template-rows: auto auto 1fr auto; }
+  header { padding: 10px 16px; flex-wrap: wrap; }
+  nav { flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px; }
+  nav .nav-foot { display: none; }
+  main { padding: 18px 16px 32px; }
+  .grid2, .split, .remote-wrap { grid-template-columns: 1fr; }
+  .picker { position: static; max-height: 420px; }
+  .remote { justify-self: center; }
+  .console-bar { padding: 8px 16px; } #consoleMeta { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span>CleanYourTV <span class="muted" style="font-weight:400">Console</span></div>
+    <div class="spacer"></div>
+    <span class="pill" id="tvPill"><span class="dot"></span><span>No TV</span></span>
+    <span class="pill" id="jobPill" hidden><span class="dot run"></span><span></span></span>
+  </header>
+
+  <nav aria-label="Steps">
+    <button data-view="connect" class="active"><span class="step" id="step-connect">1</span>Connect</button>
+    <button data-view="debloat"><span class="step">2</span>Debloat</button>
+    <button data-view="home"><span class="step">3</span>Home screen</button>
+    <button data-view="remote"><span class="step">4</span>Remote</button>
+    <button data-view="activity"><span class="step">&#8801;</span>Activity</button>
+    <div class="nav-foot">Disables, never uninstalls. Every list has a one-click restore.</div>
+  </nav>
+
+  <main>
+    <!-- 1 CONNECT -->
+    <section class="view active" id="view-connect">
+      <div class="view-head">
+        <h2>Connect to your TV</h2>
+        <p>Same Wi-Fi as this computer, network debugging on. Everything runs through CleanYourTV's own scripts over ADB: no root, no cable.</p>
+      </div>
+      <div class="card" id="upstreamCard"></div>
+      <div class="grid2">
+        <div class="card">
+          <h3>TV address</h3>
+          <form class="row" id="hostForm" autocomplete="off">
+            <input type="text" id="hostInput" placeholder="192.168.1.50" style="flex:1" spellcheck="false" aria-label="TV IP address">
+            <button class="btn primary" type="submit" id="connectBtn">Connect</button>
+          </form>
+          <p class="muted small" style="margin:8px 0 0">Find it on the TV under Settings &rarr; Network &amp; Internet. Port 5555 unless you add <code>:port</code>.</p>
+          <div id="tvResult" class="stack" style="margin-top:14px"></div>
+        </div>
+        <div class="card">
+          <h3>First time on this TV</h3>
+          <ol class="steps">
+            <li>Settings &rarr; Device Preferences &rarr; About &rarr; press OK on <b>Build</b> seven times.</li>
+            <li>Back &rarr; Developer options &rarr; <b>USB debugging</b> on. Turn on <b>Network/ADB debugging</b> too if it is there.</li>
+            <li>Press Connect, then accept <b>Allow USB debugging?</b> on the TV within two minutes.</li>
+          </ol>
+          <p class="muted small" style="margin:12px 0 0">Chromecast with Google TV and the Google TV Streamer only offer Wireless debugging with a pairing code: pair once with Google's <code>adb</code> and run <code>adb tcpip 5555</code> first.</p>
+        </div>
+      </div>
+      <div class="card">
+        <h3>When you are done</h3>
+        <p class="muted" style="margin:0 0 10px">Turn USB debugging off on the TV, then confirm the port is closed. Anyone on your network can otherwise ask the TV for a debug session.</p>
+        <button class="btn" data-run="adb-closed">Check ADB is closed</button>
+      </div>
+    </section>
+
+    <!-- 2 DEBLOAT -->
+    <section class="view" id="view-debloat">
+      <div class="view-head">
+        <h2>Debloat</h2>
+        <p>Pick the list for your TV, untick anything you use, then disable the rest. A recovery record is written before the first change, so Restore puts the TV back exactly as it was.</p>
+      </div>
+      <div class="split">
+        <div class="card picker">
+          <div class="picker-head">
+            <input type="search" id="listSearch" placeholder="Search 340+ TV models" aria-label="Search lists">
+            <select id="brandFilter" aria-label="Brand"><option value="">All brands</option></select>
+          </div>
+          <div class="picker-list" id="listPicker"><div class="empty">Loading lists&hellip;</div></div>
+          <div style="padding:12px 14px;border-top:1px solid var(--line)" class="stack">
+            <div class="small muted">No list for your TV? Let the privacy audit find voice, ACR and telemetry packages.</div>
+            <div class="row"><button class="btn sm" data-run="privacy">Run audit</button><button class="btn sm" data-run="privacy-write">Audit to new list</button></div>
+          </div>
+        </div>
+        <div class="card" id="listDetail"><div class="empty">Choose a list on the left. After you connect, lists from owners of the same TV are suggested at the top.</div></div>
+      </div>
+    </section>
+
+    <!-- 3 HOME SCREEN -->
+    <section class="view" id="view-home">
+      <div class="view-head">
+        <h2>Home screen</h2>
+        <p>Replace the ad-filled stock home with CleanYourTV's launcher (about 532 KB), then style it with a theme. Themes push without a rebuild.</p>
+      </div>
+      <div class="card">
+        <div class="row" style="justify-content:space-between;align-items:flex-start">
+          <div style="max-width:720px">
+            <h3>Launcher</h3>
+            <p class="muted" style="margin:0">Builds the APK, installs it, makes it Home and rolls back if Home does not land on it. Needs JDK 17 and the Android SDK on this computer (<code>ANDROID_HOME</code>); the first build downloads Gradle and takes a few minutes.</p>
+          </div>
+          <button class="btn primary" data-run="launcher">Build and install</button>
+        </div>
+      </div>
+      <div class="row" style="justify-content:space-between;margin:22px 0 12px">
+        <h3>Themes</h3>
+        <button class="btn sm" data-run="theme-reset">Reset to built-in look</button>
+      </div>
+      <div class="themes" id="themeGrid"><div class="empty">Loading themes&hellip;</div></div>
+    </section>
+
+    <!-- 4 REMOTE -->
+    <section class="view" id="view-remote">
+      <div class="view-head">
+        <h2>Remote</h2>
+        <p>Drive the TV from here and see the result. Arrow keys, Enter, Backspace (Back) and H (Home) work while this page is open.</p>
+      </div>
+      <div class="remote-wrap">
+        <div class="stack">
+          <div class="screen" id="screen"><span id="screenEmpty">No screenshot yet</span><img id="screenImg" alt="TV screen" hidden><span class="busy pill" id="screenBusy" hidden><span class="dot run"></span>Capturing</span></div>
+          <div class="row">
+            <button class="btn" id="shotBtn">Take screenshot</button>
+            <label class="row small" style="gap:6px"><input type="checkbox" id="livePreview" checked> Screenshot after each key</label>
+            <span class="spacer"></span>
+            <span class="small muted" id="shotTime"></span>
+          </div>
+          <div class="note small muted">Live TV, HDMI inputs and some streaming apps (Netflix) capture as black or empty: that is the TV protecting the picture, not a broken connection.</div>
+        </div>
+        <div class="remote" id="remote">
+          <div class="rrow"><button class="rbtn round" data-key="POWER" title="Power" aria-label="Power">&#x23FB;</button><span style="width:52px"></span><button class="rbtn round" data-key="TV_INPUT" title="Input" aria-label="Input">IN</button></div>
+          <div class="dpad">
+            <button class="up" data-key="DPAD_UP" aria-label="Up">&#9650;</button>
+            <button class="left" data-key="DPAD_LEFT" aria-label="Left">&#9664;</button>
+            <button class="ok" data-key="DPAD_CENTER" aria-label="OK">OK</button>
+            <button class="right" data-key="DPAD_RIGHT" aria-label="Right">&#9654;</button>
+            <button class="down" data-key="DPAD_DOWN" aria-label="Down">&#9660;</button>
+          </div>
+          <div class="rrow"><button class="rbtn" data-key="BACK">Back</button><button class="rbtn" data-key="HOME">Home</button><button class="rbtn" data-key="MENU">Menu</button></div>
+          <div class="rrow"><button class="rbtn" data-key="VOLUME_DOWN" aria-label="Volume down">Vol&minus;</button><button class="rbtn" data-key="VOLUME_MUTE">Mute</button><button class="rbtn" data-key="VOLUME_UP" aria-label="Volume up">Vol+</button></div>
+          <div class="rrow"><button class="rbtn" data-key="MEDIA_PLAY_PAUSE" aria-label="Play or pause">&#9654;&#10074;&#10074;</button><button class="rbtn" data-key="SETTINGS">Settings</button></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ACTIVITY -->
+    <section class="view" id="view-activity">
+      <div class="view-head">
+        <h2>Activity</h2>
+        <p>Every script this console has run, newest first. The full output of the current job is in the panel below.</p>
+      </div>
+      <div class="card" id="historyCard"><div class="empty">Nothing has run yet.</div></div>
+    </section>
+  </main>
+
+  <div class="console closed" id="console">
+    <div class="console-bar" id="consoleBar" role="button" tabindex="0" aria-expanded="false" aria-controls="consoleOut">
+      <span class="dot" id="consoleDot"></span>
+      <span class="title" id="consoleTitle">No job yet</span>
+      <span class="small muted" id="consoleMeta"></span>
+      <span class="spacer"></span>
+      <button class="btn sm danger" id="stopBtn" hidden>Stop</button>
+      <span class="small muted" id="consoleToggle">Show output</span>
+    </div>
+    <pre id="consoleOut" aria-live="polite"></pre>
+  </div>
+</div>
+
+<dialog id="confirm">
+  <div class="dbody"><h3 id="confirmTitle"></h3><div id="confirmBody" class="muted" style="margin-top:8px"></div></div>
+  <div class="dfoot"><button class="btn" value="cancel" id="confirmNo">Cancel</button><button class="btn primary" id="confirmYes">Run</button></div>
+</dialog>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+"use strict";
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+const S = {
+  state: null, lists: null, current: null, detail: null, tvPkgs: null,
+  wanted: new Set(), added: [], dirty: false, jobSince: 0, jobId: null, themes: null, shotBusy: false,
+};
+
+async function api(path, body) {
+  const opt = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) };
+  const res = await fetch(path, opt);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+let toastTimer;
+function toast(msg, bad = false) {
+  const t = $("#toast");
+  t.textContent = msg; t.className = "toast show" + (bad ? " bad" : "");
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.className = "toast", bad ? 7000 : 3500);
+}
+
+function confirmRun(title, html, okLabel = "Run", danger = false) {
+  const d = $("#confirm");
+  $("#confirmTitle").textContent = title;
+  $("#confirmBody").innerHTML = html;
+  const yes = $("#confirmYes");
+  yes.textContent = okLabel; yes.className = "btn " + (danger ? "danger" : "primary");
+  return new Promise(resolve => {
+    const done = v => { d.close(); yes.onclick = $("#confirmNo").onclick = null; resolve(v); };
+    yes.onclick = () => done(true);
+    $("#confirmNo").onclick = () => done(false);
+    d.oncancel = () => done(false);
+    d.showModal();
+  });
+}
+
+/* ---------- navigation ---------- */
+function show(view) {
+  $$("nav button").forEach(b => b.classList.toggle("active", b.dataset.view === view));
+  $$(".view").forEach(v => v.classList.toggle("active", v.id === "view-" + view));
+  if (view === "debloat" && !S.lists) loadLists();
+  if (view === "home" && !S.themes) loadThemes();
+  try { localStorage.setItem("cytv.view", view); } catch (e) {}
+}
+$$("nav button").forEach(b => b.onclick = () => show(b.dataset.view));
+
+/* ---------- state / connect ---------- */
+async function refreshState() {
+  try { S.state = await api("/api/state"); } catch (e) { return; }
+  renderUpstream(); renderTv(); renderJobPill(S.state.job);
+}
+
+function renderUpstream() {
+  const u = S.state.upstream, el = $("#upstreamCard");
+  if (!u.present) {
+    el.innerHTML = `<h3>CleanYourTV checkout not found</h3>
+      <p class="muted" style="margin:0 0 10px">The console drives the project's own scripts, so it needs a clone. Looked in <code>${esc(u.root)}</code>.</p>
+      <pre class="text">git clone ${esc(u.url)} ${esc(u.root)}</pre>
+      <p class="muted small" style="margin:10px 0 0">Or start with <code>cleanyourtv_ui/start.sh</code>, which clones and sets it up for you. Restart the console afterwards.</p>`;
+    return;
+  }
+  el.innerHTML = `<div class="row" style="justify-content:space-between">
+      <div><h3 style="margin:0">CleanYourTV tools <span class="tag ${u.ready ? "ok" : "warn"}">${u.ready ? "ready" : "not set up"}</span></h3>
+      <div class="small muted" style="margin-top:4px"><code>${esc(u.root)}</code>${u.commit ? ` at <code>${esc(u.commit)}</code>` : ""}</div></div>
+      ${u.ready ? "" : `<button class="btn primary" data-run="setup">Set up tools</button>`}
+    </div>
+    ${u.ready ? "" : `<p class="muted small" style="margin:10px 0 0">Creates <code>tools/venv</code> and installs the pure-Python ADB client from <code>tools/requirements.txt</code>. About 30 seconds.</p>`}`;
+}
+
+function renderTv() {
+  const st = S.state, el = $("#tvResult"), pill = $("#tvPill");
+  if (document.activeElement !== $("#hostInput") && !$("#hostInput").value) $("#hostInput").value = st.host || "";
+  const tv = st.tv;
+  pill.innerHTML = tv
+    ? `<span class="dot ok"></span><span>${esc(tv.manufacturer)} ${esc(tv.model)} &middot; ${esc(st.host)}</span>`
+    : st.host ? `<span class="dot ${st.tv_error ? "bad" : ""}"></span><span>${esc(st.host)} &middot; ${st.tv_error ? "not reachable" : "not connected"}</span>`
+    : `<span class="dot"></span><span>No TV</span>`;
+  $("#step-connect").classList.toggle("done", !!tv);
+  $("#step-connect").textContent = tv ? "✓" : "1";
+  if (tv) {
+    const ex = (S.lists?.examples || []);
+    const names = Object.fromEntries(ex.map(e => [e.slug, e.tv]));
+    const first = Object.fromEntries(ex.map(e => [e.slug, e.files[0]]));
+    el.innerHTML = `<div class="note ok"><b>Connected.</b> ${esc(tv.manufacturer)} ${esc(tv.model)}, Android ${esc(tv.android)} (SDK ${esc(tv.sdk)})</div>
+      <dl class="kv"><dt>Device</dt><dd>${esc(tv.device)}</dd><dt>Build</dt><dd>${esc(tv.build)}</dd></dl>
+      ${tv.matches?.length ? `<div><div class="small muted" style="margin-bottom:6px">Lists from owners of a similar TV</div>
+        <div class="row">${tv.matches.map(s => `<button class="btn sm" data-open="${esc(s)}">${esc(names[s] || s)}</button>`).join("")}</div></div>`
+        : `<div class="note small">No tested list matches this model yet. Browse by brand on the Debloat page, or run the privacy audit.</div>`}`;
+    $$("[data-open]", el).forEach(b => b.onclick = () => { show("debloat"); openList(`ex:${b.dataset.open}/${first[b.dataset.open] || "debloat.txt"}`); });
+    if (!S.lists) loadLists().then(renderTv);
+  } else if (st.tv_error) {
+    el.innerHTML = `<div class="note bad"><b>Could not reach the TV.</b><pre class="text" style="margin-top:6px;color:inherit">${esc(st.tv_error)}</pre></div>`;
+  } else {
+    el.innerHTML = "";
+  }
+}
+
+$("#hostForm").onsubmit = async ev => {
+  ev.preventDefault();
+  const btn = $("#connectBtn"), host = $("#hostInput").value.trim();
+  if (!host) return toast("Enter the TV's IP address", true);
+  btn.disabled = true; btn.textContent = "Connecting…";
+  $("#tvResult").innerHTML = `<div class="note warn">Waiting for the TV. If it shows <b>Allow USB debugging?</b>, tick <i>Always allow</i> and choose Allow.</div>`;
+  try {
+    await api("/api/tv/host", { host });
+    S.state = await api("/api/tv/probe", {});
+    S.tvPkgs = null;
+    renderTv(); renderUpstream();
+    if (S.state.tv) toast("Connected to " + S.state.tv.model);
+  } catch (e) { toast(e.message, true); await refreshState(); }
+  finally { btn.disabled = false; btn.textContent = "Connect"; }
+};
+
+/* ---------- lists ---------- */
+async function loadLists() {
+  try { S.lists = await api("/api/lists"); } catch (e) { $("#listPicker").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  const brands = [...new Set(S.lists.examples.map(e => e.brand).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  $("#brandFilter").innerHTML = `<option value="">All brands (${brands.length})</option>` + brands.map(b => `<option>${esc(b)}</option>`).join("");
+  renderPicker();
+}
+
+function renderPicker() {
+  if (!S.lists) return;
+  const q = $("#listSearch").value.trim().toLowerCase(), brand = $("#brandFilter").value;
+  const matches = new Set(S.state?.tv?.matches || []);
+  const hit = e => (!brand || e.brand === brand) && (!q || (e.tv + " " + e.slug + " " + e.brand + " " + e.os).toLowerCase().includes(q));
+  const exRow = (e, f) => {
+    const id = `ex:${e.slug}/${f}`;
+    return `<button class="li ${S.current === id ? "active" : ""}" data-id="${esc(id)}"><div class="t">${esc(e.tv)}${f !== "debloat.txt" ? ` <span class="tag">${esc(f)}</span>` : ""}</div><div class="s">${esc([e.brand, e.os].filter(Boolean).join(" · "))}</div></button>`;
+  };
+  let html = "";
+  const custom = S.lists.custom.filter(c => !q || c.name.toLowerCase().includes(q));
+  if (custom.length && !brand) html += `<div class="group-label">My lists</div>` + custom.map(c =>
+    `<button class="li ${S.current === c.id ? "active" : ""}" data-id="${esc(c.id)}"><div class="t">${esc(c.name)}</div><div class="s">${c.count} packages to disable</div></button>`).join("");
+  const sugg = S.lists.examples.filter(e => matches.has(e.slug) && hit(e));
+  if (sugg.length) html += `<div class="group-label">Matches your TV</div>` + sugg.flatMap(e => e.files.map(f => exRow(e, f))).join("");
+  const rest = S.lists.examples.filter(e => !matches.has(e.slug) && hit(e));
+  html += `<div class="group-label">Tested lists (${rest.length})</div>` + rest.flatMap(e => e.files.map(f => exRow(e, f))).join("");
+  if (!rest.length && !sugg.length) html += `<div class="empty">No list matches. Try the brand only.</div>`;
+  $("#listPicker").innerHTML = html;
+  $$("#listPicker .li").forEach(b => b.onclick = () => openList(b.dataset.id));
+}
+$("#listSearch").oninput = renderPicker;
+$("#brandFilter").onchange = renderPicker;
+
+async function openList(id) {
+  if (S.dirty && id !== S.current && !await confirmRun("Discard your changes?", "You changed this list and have not saved it.", "Discard", true)) return;
+  S.current = id; renderPicker();
+  $("#listDetail").innerHTML = `<div class="empty">Loading&hellip;</div>`;
+  try { S.detail = await api("/api/list?id=" + encodeURIComponent(id)); }
+  catch (e) { $("#listDetail").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  S.wanted = new Set(S.detail.entries.filter(e => e.on && !e.core).map(e => e.pkg));
+  S.added = []; S.dirty = false;
+  renderDetail();
+}
+
+function pkgState(pkg) {
+  if (!S.tvPkgs) return null;
+  if (!S.tvPkgs.installed.has(pkg)) return ["not on this TV", ""];
+  if (S.tvPkgs.disabled.has(pkg)) return ["disabled", "ok"];
+  return ["enabled", "warn"];
+}
+
+function listTitle(d) {
+  if (d.id.startsWith("custom:")) return d.id.slice(7);
+  const [slug, file] = d.id.slice(3).split("/");
+  const e = S.lists?.examples.find(x => x.slug === slug);
+  return (e ? e.tv : slug) + (file !== "debloat.txt" ? ` (${file})` : "");
+}
+
+function renderDetail() {
+  const d = S.detail, el = $("#listDetail");
+  const isCustom = d.id.startsWith("custom:");
+  const ex = !isCustom && S.lists?.examples.find(x => d.id.startsWith(`ex:${x.slug}/`));
+  const entries = d.entries.concat(S.added.map(p => ({ pkg: p, on: true, note: "added by you", section: "Added by you", core: false })));
+  const sections = [];
+  for (const e of entries) {
+    let s = sections.find(x => x.name === e.section);
+    if (!s) sections.push(s = { name: e.section, items: [] });
+    s.items.push(e);
+  }
+  const wanted = entries.filter(e => S.wanted.has(e.pkg));
+  let todo = wanted.length, already = 0, absent = 0;
+  if (S.tvPkgs) {
+    already = wanted.filter(e => pkgState(e.pkg)?.[0] === "disabled").length;
+    absent = wanted.filter(e => pkgState(e.pkg)?.[0] === "not on this TV").length;
+    todo = wanted.length - already - absent;
+  }
+  const connected = !!S.state?.tv, ready = S.state?.upstream.ready;
+  el.innerHTML = `
+    <div class="row" style="justify-content:space-between;align-items:flex-start">
+      <div style="min-width:0;flex:1">
+        <h3 style="font-size:17px">${esc(listTitle(d))}</h3>
+        <div class="small muted" style="margin-top:2px">${ex ? esc([ex.brand, ex.os].filter(Boolean).join(" · ")) : "Your list"}
+          ${d.recovery_record ? ` <span class="tag ok" title="tools/recovery.py has the TV's state from before this list ran">recovery record saved</span>` : ""}
+          ${S.dirty ? ` <span class="tag warn">unsaved changes</span>` : ""}</div>
+      </div>
+      <button class="btn sm" id="readTv" ${connected && ready ? "" : "disabled title='Connect to the TV first'"}>${S.tvPkgs ? "Re-read TV" : "Compare with TV"}</button>
+    </div>
+    ${ex && ex.notes ? `<p class="small" style="margin:12px 0 0">${esc(ex.notes)}</p>` : ""}
+    ${d.header.length ? `<details style="margin-top:12px"><summary>Contributor's notes in the list</summary><pre class="text">${esc(d.header.join("\n"))}</pre></details>` : ""}
+    ${d.readme ? `<details style="margin-top:8px"><summary>Device notes (README)</summary><pre class="text">${esc(d.readme)}</pre></details>` : ""}
+    <div class="summary" style="margin:16px 0 4px">
+      <div class="stat"><b>${S.tvPkgs ? todo : wanted.length}</b><span>${S.tvPkgs ? "to disable now" : "selected to disable"}</span></div>
+      ${S.tvPkgs ? `<div class="stat"><b>${already}</b><span>already disabled</span></div><div class="stat"><b>${absent}</b><span>not on this TV</span></div>` : ""}
+      <div class="stat"><b>${entries.length - wanted.length}</b><span>kept</span></div>
+    </div>
+    ${sections.map((s, i) => {
+      const live = s.items.filter(e => !e.core);
+      const allOn = live.length && live.every(e => S.wanted.has(e.pkg));
+      return `<div class="section"><label class="section-head"><input type="checkbox" data-sec="${i}" ${allOn ? "checked" : ""} ${live.length ? "" : "disabled"}>${esc(s.name || "General")}<span class="tag">${s.items.length}</span></label>
+      ${s.items.map(e => {
+        const on = S.wanted.has(e.pkg), st = pkgState(e.pkg);
+        return `<label class="pkg ${on ? "" : "off"} ${e.core ? "locked" : ""}">
+          <input type="checkbox" data-pkg="${esc(e.pkg)}" ${on ? "checked" : ""} ${e.core ? "disabled" : ""}>
+          <div><div class="name">${esc(e.pkg)}</div>${e.note ? `<div class="why">${esc(e.note)}</div>` : ""}${e.core ? `<div class="why" style="color:var(--bad)">Core Android or TV middleware. disable.sh refuses it: the TV may not boot without it.</div>` : ""}</div>
+          <div>${st ? `<span class="tag ${st[1]}">${st[0]}</span>` : on ? "" : `<span class="tag">kept</span>`}</div></label>`;
+      }).join("")}</div>`;
+    }).join("")}
+    <form class="row" id="addForm" style="margin-top:14px"><input type="text" id="addPkg" placeholder="Add a package, e.g. com.vendor.ads" style="flex:1" spellcheck="false"><button class="btn sm" type="submit">Add</button></form>
+    <div class="actions stack">
+      ${S.dirty || !isCustom ? `<div class="row">
+        <input type="text" id="saveName" value="${esc(isCustom ? d.id.slice(7) : (ex ? ex.slug : "my-tv") + "-mine")}" aria-label="List name" style="flex:1;max-width:260px">
+        <button class="btn ${S.dirty ? "primary" : ""}" id="saveBtn">Save as my list</button>
+        <span class="small muted">${S.dirty ? "Save first: the scripts run a list file, and Restore needs that same file later." : "Tested lists run as they are. Save a copy to change it."}</span></div>` : ""}
+      <div class="row">
+        <button class="btn primary" data-act="disable" ${S.dirty || !wanted.length ? "disabled" : ""}>Disable ${wanted.length} package${wanted.length === 1 ? "" : "s"}</button>
+        <button class="btn" data-act="check" ${S.dirty ? "disabled" : ""} title="What a firmware update undid">Check drift</button>
+        <button class="btn" data-act="fix" ${S.dirty ? "disabled" : ""}>Fix drift</button>
+        <span class="spacer"></span>
+        <button class="btn danger" data-act="restore" ${S.dirty ? "disabled" : ""}>Restore</button>
+        ${isCustom && !S.dirty ? `<button class="btn ghost sm" id="delList">Delete list</button>` : ""}
+      </div>
+    </div>`;
+
+  $$("input[data-pkg]", el).forEach(cb => cb.onchange = () => {
+    cb.checked ? S.wanted.add(cb.dataset.pkg) : S.wanted.delete(cb.dataset.pkg);
+    S.dirty = true; renderDetail();
+  });
+  $$("input[data-sec]", el).forEach(cb => cb.onchange = () => {
+    for (const e of sections[+cb.dataset.sec].items) if (!e.core) cb.checked ? S.wanted.add(e.pkg) : S.wanted.delete(e.pkg);
+    S.dirty = true; renderDetail();
+  });
+  $("#addForm").onsubmit = ev => {
+    ev.preventDefault();
+    const p = $("#addPkg").value.trim();
+    if (!/^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$/.test(p)) return toast("Not a package name: " + p, true);
+    if (entries.some(e => e.pkg === p)) { S.wanted.add(p); }
+    else { S.added.push(p); S.wanted.add(p); }
+    S.dirty = true; renderDetail();
+  };
+  $("#readTv").onclick = readTv;
+  const save = $("#saveBtn");
+  if (save) save.onclick = saveList;
+  const del = $("#delList");
+  if (del) del.onclick = async () => {
+    if (!await confirmRun("Delete this list?", `<b>${esc(d.id.slice(7))}</b> is removed from this computer. If it was applied, restore the TV first: Restore needs the same file.`, "Delete", true)) return;
+    try { await api("/api/lists/delete", { id: d.id }); S.current = null; S.detail = null; await loadLists();
+      $("#listDetail").innerHTML = `<div class="empty">List deleted.</div>`; } catch (e) { toast(e.message, true); }
+  };
+  $$("[data-act]", el).forEach(b => b.onclick = () => listAction(b.dataset.act, wanted.length, todo));
+}
+
+async function readTv() {
+  const b = $("#readTv"); b.disabled = true; b.textContent = "Reading…";
+  try {
+    const r = await api("/api/tv/packages", {});
+    S.tvPkgs = { installed: new Set(r.installed), disabled: new Set(r.disabled) };
+    toast(`${r.installed.length} packages on the TV, ${r.disabled.length} disabled`);
+  } catch (e) { toast(e.message, true); }
+  renderDetail();
+}
+
+async function saveList() {
+  const name = $("#saveName").value.trim();
+  const d = S.detail;
+  try {
+    const on = [...S.wanted].filter(p => !S.added.includes(p));
+    const r = await api("/api/lists/save", { name, base: d.id, on, added: S.added });
+    S.dirty = false;
+    await loadLists();
+    await openList(r.id);
+    toast("Saved as " + name);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function listAction(act, n, todo) {
+  const title = listTitle(S.detail);
+  const text = {
+    disable: [`Disable ${n} packages?`, `Runs <code>tools/disable.sh</code> on <b>${esc(title)}</b>${S.tvPkgs ? ` (${todo} still enabled on the TV)` : ""}. It saves the TV's current state first, skips anything that would leave the TV without a Home app or Wi-Fi, and never uninstalls.`, "Disable"],
+    restore: [`Restore the TV?`, `Runs <code>tools/restore.sh</code>: re-enables what this list disabled, puts the original Home app back and keeps anything that was already off before.`, "Restore"],
+    check: [`Check for drift?`, `Compares the TV with <b>${esc(title)}</b> and reports what a firmware update switched back on. Changes nothing.`, "Check"],
+    fix: [`Fix drift?`, `Disables what came back since the list ran and puts the launcher back on Home, with the same safety checks as disable.`, "Fix"],
+  }[act];
+  if (act !== "check" && !await confirmRun(text[0], text[1], text[2], act === "restore")) return;
+  runJob({ action: act, list: S.detail.id });
+}
+
+/* ---------- themes ---------- */
+async function loadThemes() {
+  try { S.themes = await api("/api/themes"); } catch (e) { $("#themeGrid").innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
+  $("#themeGrid").innerHTML = S.themes.length ? S.themes.map(t => `<div class="theme">
+      ${t.screenshot ? `<img loading="lazy" src="/api/theme.jpg?name=${encodeURIComponent(t.name)}" alt="${esc(t.name)} theme on the launcher">` : `<div class="screen">no screenshot</div>`}
+      <div class="body"><div class="row" style="justify-content:space-between"><b>${esc(t.name)}</b><button class="btn sm primary" data-theme="${esc(t.name)}">Push to TV</button></div><p title="${esc(t.about)}">${esc(t.about)}</p></div></div>`).join("")
+    : `<div class="empty">No themes in this checkout.</div>`;
+  $$("[data-theme]").forEach(b => b.onclick = async () => {
+    if (!await confirmRun(`Push ${b.dataset.theme}?`, `Copies the theme to the launcher and restarts Home. Needs the CleanYourTV launcher installed. Choices made in Launcher settings on the TV are cleared.`, "Push")) return;
+    runJob({ action: "theme", theme: b.dataset.theme });
+  });
+}
+
+/* ---------- jobs ---------- */
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest("[data-run]");
+  if (!b) return;
+  const act = b.dataset.run;
+  const ask = {
+    "launcher": ["Build and install the launcher?", "Builds the APK on this computer, installs it on the TV and makes it the Home app. If Home does not land on it, the script rolls back."],
+    "theme-reset": ["Reset the theme?", "Removes the theme overlay; the launcher goes back to its built-in look."],
+    "privacy-write": ["Write an audit list?", "Audits the TV and saves the voice, ACR and telemetry candidates as a new list under My lists. Nothing is disabled until you run it."],
+  }[act];
+  if (ask && !await confirmRun(ask[0], ask[1])) return;
+  runJob({ action: act });
+});
+
+async function runJob(body) {
+  try {
+    const j = await api("/api/run", body);
+    S.jobId = j.id; S.jobSince = 0; $("#consoleOut").innerHTML = "";
+    openConsole(true); renderJob(j); pollJob();
+  } catch (e) { toast(e.message, true); }
+}
+
+function classify(line) {
+  if (line.startsWith("$ ")) return "cmd";
+  if (/^(error|refusing|warning|cannot|failed)|ERROR|Traceback/i.test(line)) return "err";
+  if (/^(ok|done|success)|\bSuccess\b/i.test(line)) return "okl";
+  return "";
+}
+
+let pollTimer;
+async function pollJob() {
+  clearTimeout(pollTimer);
+  let r;
+  try { r = await api("/api/job?since=" + S.jobSince); } catch (e) { pollTimer = setTimeout(pollJob, 2000); return; }
+  const j = r.job;
+  if (j) {
+    if (j.id !== S.jobId) { S.jobId = j.id; S.jobSince = 0; $("#consoleOut").innerHTML = ""; return pollJob(); }
+    const out = $("#consoleOut");
+    const stick = out.scrollTop + out.clientHeight >= out.scrollHeight - 30;
+    if (j.lines?.length) {
+      out.insertAdjacentHTML("beforeend", j.lines.map(l => { const c = classify(l); return c ? `<span class="${c}">${esc(l)}</span>\n` : esc(l) + "\n"; }).join(""));
+      if (stick) out.scrollTop = out.scrollHeight;
+    }
+    S.jobSince = j.total;
+    renderJob(j);
+  }
+  renderHistory(r.history);
+  if (j && j.state === "running") pollTimer = setTimeout(pollJob, 700);
+  else if (j && S.lastState !== j.id + j.state) {
+    S.lastState = j.id + j.state;
+    jobFinished(j);
+  }
+}
+
+function jobFinished(j) {
+  if (!j.finished || Date.now() / 1000 - j.finished > 10) return;
+  const ok = j.state === "done";
+  toast(`${j.title}: ${ok ? "finished" : j.state === "stopped" ? "stopped" : "failed (exit " + j.exit_code + ")"}`, !ok);
+  if (j.action === "setup") refreshState();
+  if (["disable", "restore", "fix"].includes(j.action) && S.detail) { S.tvPkgs = null; openList(S.detail.id); }
+  if (j.action === "privacy-write") loadLists();
+}
+
+function renderJob(j) {
+  const dot = $("#consoleDot");
+  dot.className = "dot " + (j.state === "running" ? "run" : j.state === "done" ? "ok" : "bad");
+  $("#consoleTitle").textContent = j.title;
+  const secs = Math.round((j.finished || Date.now() / 1000) - j.started);
+  $("#consoleMeta").textContent = j.state === "running" ? `running ${secs}s` : `${j.state}${j.exit_code ? " (exit " + j.exit_code + ")" : ""} in ${secs}s`;
+  $("#stopBtn").hidden = j.state !== "running";
+  renderJobPill(j);
+}
+
+function renderJobPill(j) {
+  const p = $("#jobPill");
+  p.hidden = !(j && j.state === "running");
+  if (!p.hidden) $("span:last-child", p).textContent = j.title;
+}
+
+function renderHistory(h) {
+  if (!h || !h.length) return;
+  const fmt = t => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+  $("#historyCard").innerHTML = `<table style="width:100%;border-collapse:collapse">${h.map(j => `<tr style="border-bottom:1px solid var(--line)">
+    <td style="padding:8px 0;width:90px" class="mono muted">${fmt(j.started)}</td><td>${esc(j.title)}</td>
+    <td style="text-align:right"><span class="tag ${j.state === "done" ? "ok" : "bad"}">${esc(j.state)}${j.exit_code ? " " + j.exit_code : ""}</span></td></tr>`).join("")}</table>`;
+}
+
+function openConsole(open) {
+  const c = $("#console");
+  c.classList.toggle("closed", !open);
+  $("#consoleBar").setAttribute("aria-expanded", String(open));
+  $("#consoleToggle").textContent = open ? "Hide output" : "Show output";
+}
+$("#consoleBar").onclick = ev => { if (!ev.target.closest("#stopBtn")) openConsole($("#console").classList.contains("closed")); };
+$("#consoleBar").onkeydown = ev => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openConsole($("#console").classList.contains("closed")); } };
+$("#stopBtn").onclick = async () => {
+  if (!await confirmRun("Stop this job?", "The script is interrupted where it is. After a stopped disable, Restore still works from the record saved before the first change.", "Stop", true)) return;
+  try { await api("/api/job/stop", {}); } catch (e) { toast(e.message, true); }
+};
+
+/* ---------- remote ---------- */
+async function capture(key) {
+  if (S.shotBusy) return;
+  if (!S.state?.tv) return toast("Connect to the TV first", true);
+  S.shotBusy = true; $("#screenBusy").hidden = false;
+  try {
+    const live = $("#livePreview").checked;
+    const r = key && !live ? await api("/api/tv/key", { key }) : await api("/api/tv/screenshot", key ? { key } : {});
+    if (!r.ok) toast(r.message || "The TV refused", true);
+    else if (!key || live) {
+      const img = $("#screenImg");
+      img.src = "/api/tv/screen.png?t=" + Date.now(); img.hidden = false; $("#screenEmpty").hidden = true;
+      $("#shotTime").textContent = "Captured " + new Date().toLocaleTimeString([], { hour12: false });
+    }
+  } catch (e) { toast(e.message, true); }
+  finally { S.shotBusy = false; $("#screenBusy").hidden = true; }
+}
+$("#shotBtn").onclick = () => capture(null);
+$$("#remote [data-key]").forEach(b => b.onclick = () => capture(b.dataset.key));
+document.addEventListener("keydown", ev => {
+  if (!$("#view-remote").classList.contains("active") || ev.target.closest("input, select, textarea, dialog")) return;
+  const key = { ArrowUp: "DPAD_UP", ArrowDown: "DPAD_DOWN", ArrowLeft: "DPAD_LEFT", ArrowRight: "DPAD_RIGHT",
+    Enter: "DPAD_CENTER", Backspace: "BACK", Escape: "BACK", h: "HOME", H: "HOME" }[ev.key];
+  if (key) { ev.preventDefault(); capture(key); }
+});
+
+/* ---------- boot ---------- */
+(async () => {
+  await refreshState();
+  pollJob();
+  let view = "connect";
+  try { view = localStorage.getItem("cytv.view") || view; } catch (e) {}
+  show(document.getElementById("view-" + view) ? view : "connect");
+  setInterval(() => { if (!document.hidden) refreshState(); }, 5000);
+})();
+</script>
+</body>
+</html>
